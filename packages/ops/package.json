@@ -1,0 +1,14 @@
+{
+  "name": "@orc/ops",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@orc/core": "*",
+    "@orc/executors": "*",
+    "@orc/harness-claude": "*",
+    "@orc/harness-codex": "*",
+    "@orc/ui": "*",
+    "zod": "^4.1.0"
+  }
+}

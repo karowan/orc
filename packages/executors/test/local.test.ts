@@ -1,0 +1,126 @@
+import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { LocalExecutor } from "../src/local.js";
+import { checkCwd, doctor } from "../src/doctor.js";
+import { executorFor } from "../src/factory.js";
+import { SshExecutor } from "../src/ssh.js";
+
+const local = new LocalExecutor();
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(cond: () => boolean, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return cond();
+}
+
+describe("LocalExecutor", () => {
+  it("captures stdout and stderr separately", async () => {
+    const { code, stdout, stderr } = await local.run(["sh", "-c", "echo out; echo err >&2"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("out\n");
+    expect(stderr).toBe("err\n");
+  });
+
+  it("reports exit codes", async () => {
+    expect((await local.run(["sh", "-c", "exit 0"])).code).toBe(0);
+    expect((await local.run(["sh", "-c", "exit 7"])).code).toBe(7);
+  });
+
+  it("resolves -1 for an unspawnable binary (never rejects)", async () => {
+    const { code } = await local.run(["definitely-not-a-real-binary-orc"]);
+    expect(code).toBe(-1);
+  });
+
+  it("respects cwd and env", async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), "orc-local-"));
+    const { stdout } = await local.run(["sh", "-c", "pwd; printf %s \"$ORC_TEST_VAR\""], {
+      cwd: dir,
+      env: { ORC_TEST_VAR: "hello" },
+    });
+    expect(stdout.split("\n")[0]).toBe(await fs.realpath(dir));
+    expect(stdout.endsWith("hello")).toBe(true);
+  });
+
+  it("kill() terminates the whole process group, including children", async () => {
+    // The shell backgrounds one sleep and foregrounds another; group kill must
+    // take out both. The background child's pid is printed for verification.
+    const proc = local.spawn(["sh", "-c", "sleep 100 & echo $!; sleep 100"]);
+    let out = "";
+    proc.stdout.setEncoding("utf8");
+    proc.stdout.on("data", (d: string) => (out += d));
+    await waitFor(() => out.includes("\n"), 5000);
+    const childPid = Number(out.trim());
+    expect(childPid).toBeGreaterThan(0);
+    expect(pidAlive(childPid)).toBe(true);
+
+    proc.kill();
+    const code = await proc.exited;
+    expect(code).toBe(-1); // died by signal
+    expect(await waitFor(() => !pidAlive(childPid), 5000)).toBe(true);
+  });
+
+  it("kill() is idempotent", async () => {
+    const proc = local.spawn(["sleep", "60"]);
+    proc.kill();
+    proc.kill();
+    expect(await proc.exited).toBe(-1);
+  });
+
+  it("run() timeoutMs kills the process and resolves -1", async () => {
+    const start = Date.now();
+    const { code } = await local.run(["sleep", "60"], { timeoutMs: 250 });
+    expect(code).toBe(-1);
+    expect(Date.now() - start).toBeLessThan(10_000);
+  });
+
+  it("readFile/writeFile/exists round-trip in a tmp dir", async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), "orc-localfs-"));
+    const file = join(dir, "data.txt");
+    expect(await local.exists(file)).toBe(false);
+    const payload = "line1\nline2 with 'quotes' and $dollars\n";
+    await local.writeFile(file, payload);
+    expect(await local.exists(file)).toBe(true);
+    expect(await local.readFile(file)).toBe(payload);
+    expect(await checkCwd(local, dir)).toBe(true);
+    expect(await checkCwd(local, join(dir, "missing"))).toBe(false);
+  });
+});
+
+describe("executorFor", () => {
+  it("returns a cached LocalExecutor for undefined and SshExecutor per host", () => {
+    const a = executorFor(undefined);
+    expect(a.host).toBeUndefined();
+    expect(executorFor(undefined)).toBe(a);
+    const b = executorFor("frank");
+    expect(b).toBeInstanceOf(SshExecutor);
+    expect(b.host).toBe("frank");
+    expect(executorFor("frank")).toBe(b);
+    expect(executorFor("user@other")).not.toBe(b);
+  });
+});
+
+describe("doctor", () => {
+  it("reports found binaries with versions and missing ones as not found", async () => {
+    const report = await doctor(local, { harnesses: ["sh", "definitely-not-a-real-binary-orc"] });
+    expect(report.host).toBeUndefined();
+    const sh = report.harnesses.find((h) => h.name === "sh");
+    expect(sh?.found).toBe(true);
+    expect(sh?.path).toMatch(/\/sh$/);
+    const missing = report.harnesses.find((h) => h.name === "definitely-not-a-real-binary-orc");
+    expect(missing?.found).toBe(false);
+  });
+});

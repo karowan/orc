@@ -1,0 +1,394 @@
+/**
+ * The deterministic program VM: quickjs-emscripten (sync build) with a
+ * host-controlled event loop.
+ *
+ * Determinism contract (design doc §5.3):
+ * - The bootstrap actively strips ambient authority (Date, Math.random,
+ *   WeakRef, FinalizationRegistry) — a fresh QuickJS context ships all of them.
+ * - orc drives the event loop itself; jobs run only inside drain().
+ * - Sequence identity: each agent()/ext.* call gets the next sequence number in
+ *   call order. Scheduling is replayed deterministically, so call order is
+ *   stable across live execution and replay.
+ * - Delivery granularity is part of the replay contract: exactly ONE completion
+ *   is resolved per quiescent drain.
+ * - The step budget is the interrupt handler's invocation count per turn —
+ *   never wall-clock (which would abort replay at a different point than live).
+ * - Values cross the boundary as VM-parsed canonical JSON literals; the journal
+ *   digest is computed host-side over the exact canonical bytes.
+ */
+import {
+  getQuickJS,
+  type QuickJSContext,
+  type QuickJSDeferredPromise,
+  type QuickJSRuntime,
+  type QuickJSHandle,
+} from "quickjs-emscripten";
+import { canonicalJson } from "./canonical.js";
+import { PolicyError, type Json, type Policy, type ThunkSpec } from "./contracts.js";
+
+export interface VmHooks {
+  /**
+   * Called synchronously when the program makes a call. MUST NOT re-enter the
+   * VM (no evalCode / executePendingJobs from inside). Record and return.
+   */
+  onCall(seq: number, spec: ThunkSpec): void;
+  onLog(message: string): void;
+  onPhase(name: string): void;
+}
+
+export type ProgramState =
+  | { state: "pending" }
+  | { state: "ok"; result: Json }
+  | { state: "error"; error: string };
+
+type Deferred = QuickJSDeferredPromise;
+
+const BOOTSTRAP = String.raw`
+"use strict";
+(function () {
+  var deny = function (name) {
+    var f = function () { throw new Error(name + " is not available in orc programs (deterministic sandbox)"); };
+    return f;
+  };
+  var deniedDate = deny("Date");
+  deniedDate.now = deny("Date.now");
+  deniedDate.parse = deny("Date.parse");
+  deniedDate.UTC = deny("Date.UTC");
+  globalThis.Date = deniedDate;
+  Math.random = deny("Math.random");
+  globalThis.WeakRef = undefined;
+  globalThis.FinalizationRegistry = undefined;
+
+  var groupCounter = 0;
+  var currentPhase = "";
+
+  function dispatch(spec) {
+    if (spec.phase === undefined && currentPhase) spec.phase = currentPhase;
+    return __orc_dispatch(JSON.stringify(spec));
+  }
+
+  function normTimeout(v) {
+    if (v === false) return false;
+    if (typeof v === "number") return v;
+    return undefined;
+  }
+
+  // Dispatch a leaf and, when its completion resolves, restore the phase that
+  // was active at CALL time. Correct under concurrency because orc delivers
+  // exactly one completion per quiescent drain: the restore microtask runs
+  // (and any synchronous agent() calls in the await continuation capture the
+  // right phase) before the next completion is ever delivered.
+  function dispatchLeaf(spec) {
+    var capturedPhase = currentPhase;
+    return dispatch(spec).then(
+      function (v) { currentPhase = capturedPhase; return v; },
+      function (e) { currentPhase = capturedPhase; throw e; }
+    );
+  }
+
+  globalThis.agent = function (prompt, opts) {
+    var o = opts || {};
+    return dispatchLeaf({
+      kind: "agent",
+      prompt: String(prompt),
+      id: o.id,
+      harness: o.harness,
+      model: o.model,
+      reasoningEffort: o.reasoningEffort,
+      schema: o.schema,
+      readOnly: o.readOnly === false ? false : true,
+      cwd: o.cwd,
+      host: o.host,
+      phase: o.phase,
+      idleTimeoutMs: normTimeout(o.idleTimeout),
+      groupId: o.__groupId,
+    });
+  };
+
+  // Independent fan-out: every lane runs to completion and comes back as a
+  // settled outcome ({status:"ok",value}|{status:"error",error}), so one lane's
+  // failure never cancels or wastes its siblings. The caller decides how to
+  // handle partial failure. (For fail-fast, use Promise.all over agent().)
+  globalThis.parallel = function (specs) {
+    var gid = "g" + ++groupCounter;
+    return Promise.all(
+      specs.map(function (s) {
+        var o = Object.assign({}, s);
+        var prompt = o.prompt;
+        delete o.prompt;
+        o.__groupId = gid; // lane-grouping metadata for the monitor
+        return globalThis.settle(globalThis.agent(prompt, o));
+      })
+    );
+  };
+
+  globalThis.settle = function (p) {
+    return Promise.resolve(p).then(
+      function (v) { return { status: "ok", value: v === undefined ? null : v }; },
+      function (e) { return { status: "error", error: String((e && e.message) || e) }; }
+    );
+  };
+
+  // Lexically scoped ONLY (the rejected persistent-global marker is not offered):
+  // phase(name, fn) labels every call made inside fn, and — thanks to the
+  // call-time capture + one-per-drain restore above — that holds across awaits
+  // and concurrent sibling phases without mislabeling.
+  globalThis.phase = function (name, fn) {
+    var label = String(name);
+    if (typeof fn !== "function") {
+      throw new Error(
+        'phase(name, fn) requires a function, e.g. phase("' + label + '", () => {...}). ' +
+        'For a single call, use the per-call { phase: "' + label + '" } option instead.'
+      );
+    }
+    __orc_phase(label);
+    var prev = currentPhase;
+    currentPhase = label;
+    try {
+      var r = fn();
+      if (r && typeof r.then === "function") {
+        return r.then(
+          function (v) { currentPhase = prev; return v; },
+          function (e) { currentPhase = prev; throw e; }
+        );
+      }
+      currentPhase = prev;
+      return r;
+    } catch (e) {
+      currentPhase = prev;
+      throw e;
+    }
+  };
+
+  globalThis.log = function (msg) { __orc_log(String(msg)); };
+
+  globalThis.ext = new Proxy({}, {
+    get: function (_t, name) {
+      return function (payload) {
+        return dispatchLeaf({
+          kind: "ext:" + String(name),
+          payload: payload === undefined ? null : payload,
+          readOnly: true, // host overrides from the extension registration
+        });
+      };
+    },
+  });
+
+  globalThis.__orc_api = {
+    agent: globalThis.agent,
+    parallel: globalThis.parallel,
+    phase: globalThis.phase,
+    log: globalThis.log,
+    settle: globalThis.settle,
+    ext: globalThis.ext,
+  };
+})();
+`;
+
+const INVOKE = String.raw`
+"use strict";
+(function () {
+  var mod = typeof __orc_mod !== "undefined" ? __orc_mod : undefined;
+  var fn = mod && (typeof mod.default === "function" ? mod.default : typeof mod === "function" ? mod : null);
+  if (!fn) throw new Error("program has no default-exported function");
+  globalThis.__orc_state = "pending";
+  globalThis.__orc_result = null;
+  Promise.resolve(fn(globalThis.__orc_api)).then(
+    function (v) { globalThis.__orc_state = "ok"; globalThis.__orc_result = v === undefined ? null : v; },
+    function (e) {
+      globalThis.__orc_state = "error";
+      // QuickJS Error.stack does NOT include the message line (unlike V8).
+      var msg = e && e.message ? String(e.message) : String(e);
+      var stack = e && e.stack ? String(e.stack) : "";
+      globalThis.__orc_result = stack ? msg + "\n" + stack : msg;
+    }
+  );
+})();
+`;
+
+export class ProgramVM {
+  private runtime: QuickJSRuntime;
+  private ctx: QuickJSContext;
+  private deferreds = new Map<number, Deferred>();
+  private nextSeq = 0;
+  private stepsRemaining = 0;
+  private interrupted = false;
+  private disposed = false;
+
+  private constructor(
+    runtime: QuickJSRuntime,
+    ctx: QuickJSContext,
+    private readonly policy: Policy,
+    private readonly hooks: VmHooks,
+  ) {
+    this.runtime = runtime;
+    this.ctx = ctx;
+  }
+
+  static async create(bundle: string, policy: Policy, hooks: VmHooks, startSeq = 0): Promise<ProgramVM> {
+    const QuickJS = await getQuickJS();
+    const runtime = QuickJS.newRuntime();
+    runtime.setMemoryLimit(policy.memoryLimitBytes);
+    runtime.setMaxStackSize(policy.maxStackBytes);
+    const ctx = runtime.newContext();
+    const vm = new ProgramVM(runtime, ctx, policy, hooks);
+    vm.nextSeq = startSeq;
+
+    runtime.setInterruptHandler(() => {
+      vm.stepsRemaining -= 1;
+      if (vm.stepsRemaining < 0) {
+        vm.interrupted = true;
+        return true;
+      }
+      return false;
+    });
+
+    vm.installHostFunctions();
+    vm.evalOrThrow(BOOTSTRAP, "orc-bootstrap.js");
+    vm.evalOrThrow(bundle, "program.bundle.js");
+    vm.evalOrThrow(INVOKE, "orc-invoke.js");
+    vm.drain(); // initial turn: run the program to its first quiescent point
+    return vm;
+  }
+
+  private installHostFunctions(): void {
+    const { ctx } = this;
+
+    const dispatchFn = ctx.newFunction("__orc_dispatch", (specHandle) => {
+      const specJson = ctx.getString(specHandle);
+      const spec = JSON.parse(specJson) as ThunkSpec;
+      const seq = this.nextSeq++;
+      // Record only — never re-enter the VM from a host callback.
+      this.hooks.onCall(seq, spec);
+      const deferred = ctx.newPromise();
+      this.deferreds.set(seq, deferred);
+      // Returned to the program as its awaited promise; the handle is owned by
+      // the deferred and freed via deferred.dispose() (see deliver/dispose).
+      return deferred.handle;
+    });
+    ctx.setProp(ctx.global, "__orc_dispatch", dispatchFn);
+    dispatchFn.dispose();
+
+    const logFn = ctx.newFunction("__orc_log", (msgHandle) => {
+      this.hooks.onLog(ctx.getString(msgHandle));
+    });
+    ctx.setProp(ctx.global, "__orc_log", logFn);
+    logFn.dispose();
+
+    const phaseFn = ctx.newFunction("__orc_phase", (nameHandle) => {
+      this.hooks.onPhase(ctx.getString(nameHandle));
+    });
+    ctx.setProp(ctx.global, "__orc_phase", phaseFn);
+    phaseFn.dispose();
+  }
+
+  private evalOrThrow(code: string, filename: string): void {
+    this.resetBudget();
+    const result = this.ctx.evalCode(code, filename);
+    if ("error" in result && result.error) {
+      const err = this.ctx.dump(result.error);
+      result.error.dispose();
+      throw new Error(`program error in ${filename}: ${typeof err === "object" ? JSON.stringify(err) : String(err)}`);
+    }
+    result.value.dispose();
+    if (this.interrupted) throw new PolicyError(`step budget exceeded in ${filename}`);
+  }
+
+  private resetBudget(): void {
+    this.stepsRemaining = this.policy.stepBudgetPerTurn;
+    this.interrupted = false;
+  }
+
+  /** Drain the VM job queue to quiescence. One turn = one step budget. */
+  drain(): void {
+    this.resetBudget();
+    // executePendingJobs runs queued promise jobs; loop defensively.
+    for (;;) {
+      const res = this.runtime.executePendingJobs();
+      if ("error" in res && res.error) {
+        const err = this.ctx.dump(res.error);
+        res.error.dispose();
+        throw new Error(`program job error: ${typeof err === "object" ? JSON.stringify(err) : String(err)}`);
+      }
+      const executed = "value" in res ? res.value : 0;
+      if (this.interrupted) throw new PolicyError("step budget exceeded");
+      if (executed === 0) return;
+    }
+  }
+
+  /**
+   * Deliver exactly one completion, then drain to quiescence.
+   * This one-per-drain policy is replay-visible and frozen (§5.3).
+   */
+  deliver(seq: number, outcome: { status: "ok"; value: Json } | { status: "error"; error: string }): void {
+    const deferred = this.deferreds.get(seq);
+    if (!deferred) throw new Error(`no pending call with seq ${seq}`);
+    this.deferreds.delete(seq);
+    if (outcome.status === "ok") {
+      const literal = `(${canonicalJson(outcome.value)})`;
+      const parsed = this.ctx.evalCode(literal, `orc-result-${seq}.js`);
+      if ("error" in parsed && parsed.error) {
+        const err = this.ctx.dump(parsed.error);
+        parsed.error.dispose();
+        deferred.dispose();
+        throw new Error(`failed to materialize result for seq ${seq}: ${JSON.stringify(err)}`);
+      }
+      deferred.resolve(parsed.value);
+      parsed.value.dispose();
+    } else {
+      const literal = `(new Error(${JSON.stringify(outcome.error)}))`;
+      const parsed = this.ctx.evalCode(literal, `orc-error-${seq}.js`);
+      if ("error" in parsed && parsed.error) {
+        parsed.error.dispose();
+        deferred.dispose();
+        throw new Error(`failed to materialize error for seq ${seq}`);
+      }
+      deferred.reject(parsed.value);
+      parsed.value.dispose();
+    }
+    deferred.dispose(); // frees the deferred's resolve/reject/handle
+    this.drain();
+  }
+
+  /** Sequence numbers of calls made but not yet delivered. */
+  pendingSeqs(): number[] {
+    return [...this.deferreds.keys()].sort((a, b) => a - b);
+  }
+
+  state(): ProgramState {
+    const stateRes = this.ctx.evalCode("globalThis.__orc_state");
+    const state = this.ctx.dump(this.ctx.unwrapResult(stateRes)) as string;
+    if (state === "pending") return { state: "pending" };
+    const resultRes = this.ctx.evalCode("globalThis.__orc_result");
+    const handle = this.ctx.unwrapResult(resultRes);
+    const value = this.ctx.dump(handle) as Json;
+    handle.dispose();
+    if (state === "ok") return { state: "ok", result: value ?? null };
+    return { state: "error", error: String(value) };
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    // Undelivered deferreds (e.g. validate previews, deadlocks): free them so
+    // the runtime disposes cleanly (avoids the QuickJS gc_obj_list assertion).
+    for (const d of this.deferreds.values()) {
+      try {
+        d.dispose();
+      } catch {
+        /* already consumed */
+      }
+    }
+    this.deferreds.clear();
+    try {
+      this.ctx.dispose();
+    } catch {
+      /* leaked handles on release builds are silent; best effort */
+    }
+    try {
+      this.runtime.dispose();
+    } catch {
+      /* ditto */
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@orc/sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@orc/ops": "*",
+    "@orc/core": "*",
+    "zod": "^4.1.0"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./program": "./src/program.ts"
+  }
+}

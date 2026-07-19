@@ -1,0 +1,11 @@
+{
+  "name": "@orc/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@orc/ops": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.1.0"
+  }
+}

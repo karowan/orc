@@ -1,0 +1,11 @@
+{
+  "name": "@orc/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "quickjs-emscripten": "^0.31.0",
+    "esbuild": "^0.25.0",
+    "zod": "^4.1.0"
+  }
+}
