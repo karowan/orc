@@ -1,7 +1,7 @@
 # orc
 
-A lightweight TypeScript orchestration runtime — a port of the Go `factory.orchestrate`
-engine. Model-authored **promise-native** programs whose `agent()` calls become
+A lightweight TypeScript orchestration runtime.
+Model-authored **promise-native** programs whose `agent()` calls become
 journaled, run-once leaf executions, with deterministic replay/resume, live
 monitoring, per-call SSH-remote working directories, and pluggable harnesses.
 No Temporal, no daemon, no database.

@@ -1,5 +1,5 @@
 /**
- * Shared contracts for orc — the TypeScript port of factory.orchestrate.
+ * Shared contracts for orc.
  * Everything here is consumed by core, executors, harnesses, ops, and ui.
  */
 import type { Readable, Writable } from "node:stream";
@@ -391,7 +391,7 @@ export type ControlMessage =
   | { t: "approval"; approvalId: string; decision: ApprovalDecision; by: string; atMs: number };
 
 // ---------------------------------------------------------------------------
-// Policy caps (ported from the Go ControllerPolicy)
+// Policy caps
 // ---------------------------------------------------------------------------
 export interface Policy {
   maxCommands: number; // 128

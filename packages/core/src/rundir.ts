@@ -75,7 +75,7 @@ function truncateUnterminatedTail(filePath: string): void {
 /**
  * Append-only JSONL file with an explicit fsync mode.
  * The journal uses fsync-per-append (the WAL); the trace sidecar fsyncs only
- * on leaf close records (matching the Go sidecar durability rule).
+ * on leaf close records.
  */
 export class JsonlAppender<T> {
   private fd: number;
