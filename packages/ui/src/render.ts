@@ -12,6 +12,7 @@
  */
 import type {
   ApprovalRequest,
+  JournalRecord,
   Json,
   LeafStatus,
   LeafTraceRecord,
@@ -275,6 +276,8 @@ export interface RunView {
   manifest: RunManifest;
   status: RunStatus;
   traces: TraceRecord[];
+  /** Durable cost records; traces remain the fallback for legacy runs. */
+  journal?: JournalRecord[];
   /** true = live server page (working gate buttons, drawer, SSE). */
   interactive: boolean;
   /** seq of the leaf whose lane drawer is open (undefined = closed). */
@@ -312,13 +315,33 @@ interface CostRollup {
   anyExact: boolean;
   present: boolean;
 }
-function rollupCost(detail: Map<number, LeafTraceRecord>): CostRollup {
+function rollupCost(traces: TraceRecord[], journal: JournalRecord[] = []): CostRollup {
+  const attempts = new Map<string, { costUsd: number; costEstimated: boolean; rev?: number }>();
+  for (const trace of traces) {
+    if (trace.t !== "leaf" || trace.costUsd === undefined) continue;
+    const key = `${trace.seq}:${trace.attempt}`;
+    const current = attempts.get(key);
+    if (!current || trace.rev >= (current.rev ?? -1)) {
+      attempts.set(key, {
+        costUsd: trace.costUsd,
+        costEstimated: trace.costEstimated ?? false,
+        rev: trace.rev,
+      });
+    }
+  }
+  for (const record of journal) {
+    if (record.t === "cost") {
+      attempts.set(`${record.seq}:${record.attempt}`, {
+        costUsd: record.costUsd,
+        costEstimated: record.costEstimated,
+      });
+    }
+  }
   let total = 0;
   let anyEstimated = false;
   let anyExact = false;
   let present = false;
-  for (const tr of detail.values()) {
-    if (tr.costUsd === undefined) continue;
+  for (const tr of attempts.values()) {
     present = true;
     total += tr.costUsd;
     if (tr.costEstimated) anyEstimated = true;
@@ -344,7 +367,7 @@ export function renderRunBody(view: RunView): string {
     gatesBySeq.set(a.seq, arr);
   }
   const events = traces.filter((r): r is RunEventRecord => r.t === "event");
-  const cost = rollupCost(detail);
+  const cost = rollupCost(traces, view.journal);
 
   const drawer =
     view.selectedSeq !== undefined && status.leaves.some((l) => l.seq === view.selectedSeq)
@@ -752,6 +775,7 @@ export function renderReportHtml(opts: {
   manifest: RunManifest;
   status: RunStatus;
   traces: TraceRecord[];
+  journal?: JournalRecord[];
   live: boolean;
   selectedSeq?: number;
 }): string {
@@ -832,7 +856,7 @@ es.onerror = function(){ es.close(); refresh(); };
 if(!reduce) requestAnimationFrame(tick);
 `.trim();
 
-export function renderLivePage(opts: { manifest: RunManifest; status: RunStatus; traces: TraceRecord[]; selectedSeq?: number }): string {
+export function renderLivePage(opts: { manifest: RunManifest; status: RunStatus; traces: TraceRecord[]; journal?: JournalRecord[]; selectedSeq?: number }): string {
   const body = `<div id="app">
 ${renderRunBody({ ...opts, interactive: true, selectedSeq: opts.selectedSeq })}
 </div>`;

@@ -1,0 +1,1635 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Canonical retroactive design document for the orc agent-orchestration runtime.">
+  <title>orc · System Design</title>
+  <style>
+    :root {
+      --ink: #18212f;
+      --muted: #5e6978;
+      --paper: #f5f7fa;
+      --panel: #ffffff;
+      --line: #dbe1e8;
+      --navy: #101b2d;
+      --navy-2: #182844;
+      --blue: #1769aa;
+      --blue-soft: #e9f3fc;
+      --green: #197455;
+      --green-soft: #e8f6f0;
+      --amber: #9a5b00;
+      --amber-soft: #fff3d8;
+      --red: #a7353a;
+      --red-soft: #fdecee;
+      --violet: #6550a5;
+      --violet-soft: #f0ecfb;
+      --shadow: 0 12px 34px rgba(25, 38, 58, 0.08);
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.58 var(--sans);
+    }
+    a { color: var(--blue); text-underline-offset: 3px; }
+    a:hover { color: #0e4e85; }
+    code, pre { font-family: var(--mono); }
+    code {
+      padding: 0.08em 0.34em;
+      border-radius: 5px;
+      background: #edf1f5;
+      font-size: 0.91em;
+    }
+    pre {
+      overflow: auto;
+      margin: 0;
+      padding: 18px 20px;
+      border: 1px solid #2d405f;
+      border-radius: 12px;
+      color: #eaf1fb;
+      background: #111d30;
+      font-size: 13px;
+      line-height: 1.6;
+      tab-size: 2;
+    }
+    pre:focus-visible, .table-wrap:focus-visible {
+      outline: 3px solid #6fc0ff;
+      outline-offset: 3px;
+    }
+    pre code { padding: 0; color: inherit; background: transparent; }
+    h1, h2, h3, h4 { line-height: 1.18; letter-spacing: -0.018em; }
+    h1 { margin: 0; font-size: clamp(2.4rem, 6vw, 5.1rem); }
+    h2 { margin: 0 0 12px; font-size: clamp(1.75rem, 3vw, 2.55rem); }
+    h3 { margin: 0 0 8px; font-size: 1.15rem; }
+    h4 { margin: 0 0 6px; font-size: 1rem; }
+    p { margin: 0 0 14px; }
+    ul, ol { margin-top: 8px; padding-left: 1.35rem; }
+    li + li { margin-top: 6px; }
+    strong { font-weight: 720; }
+
+    .skip {
+      position: fixed;
+      z-index: 50;
+      top: 8px;
+      left: 8px;
+      transform: translateY(-160%);
+      padding: 9px 12px;
+      border-radius: 8px;
+      color: white;
+      background: var(--blue);
+    }
+    .skip:focus { transform: none; }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 72px max(28px, calc((100vw - 1380px) / 2)) 54px;
+      color: white;
+      background:
+        radial-gradient(circle at 88% 12%, rgba(57, 142, 210, 0.34), transparent 28rem),
+        linear-gradient(135deg, var(--navy), var(--navy-2));
+    }
+    .hero::after {
+      position: absolute;
+      inset: 0;
+      content: "";
+      opacity: 0.14;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,.17) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.17) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: linear-gradient(to bottom right, transparent 5%, black 80%);
+    }
+    .hero-inner { position: relative; z-index: 1; max-width: 1120px; }
+    .eyebrow {
+      margin: 0 0 14px;
+      color: #9dccf2;
+      font: 700 0.76rem/1.2 var(--mono);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .hero h1 span { color: #6fc0ff; }
+    .hero .lede {
+      max-width: 850px;
+      margin: 22px 0 0;
+      color: #d8e3f1;
+      font-size: clamp(1.08rem, 2vw, 1.34rem);
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 28px;
+    }
+    .meta span {
+      padding: 7px 10px;
+      border: 1px solid rgba(255,255,255,.22);
+      border-radius: 999px;
+      color: #eaf3fb;
+      background: rgba(255,255,255,.07);
+      font: 650 0.75rem/1.2 var(--mono);
+    }
+
+    .page {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 42px;
+      width: min(1380px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 38px 0 88px;
+    }
+    .toc {
+      align-self: start;
+      position: sticky;
+      top: 22px;
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.88);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+    .toc-title {
+      margin-bottom: 9px;
+      color: var(--muted);
+      font: 750 0.7rem/1.2 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .toc a {
+      display: block;
+      padding: 6px 8px;
+      border-radius: 6px;
+      color: #344256;
+      font-size: 0.83rem;
+      text-decoration: none;
+    }
+    .toc a:hover { color: var(--blue); background: var(--blue-soft); }
+    main { min-width: 0; }
+    section {
+      scroll-margin-top: 24px;
+      margin-bottom: 54px;
+    }
+    .section-head {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+      margin-bottom: 20px;
+    }
+    .section-no {
+      display: grid;
+      width: 40px;
+      height: 40px;
+      place-items: center;
+      border-radius: 10px;
+      color: white;
+      background: var(--navy);
+      font: 750 0.76rem/1 var(--mono);
+    }
+    .section-lede { max-width: 880px; color: var(--muted); font-size: 1.02rem; }
+
+    .panel {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .grid-2, .grid-3, .principles {
+      display: grid;
+      gap: 16px;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .principles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .principle {
+      min-height: 160px;
+      padding: 19px;
+      border: 1px solid var(--line);
+      border-top: 4px solid var(--blue);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    .principle p { margin: 0; color: var(--muted); font-size: 0.93rem; }
+    .principle .num {
+      display: inline-block;
+      margin-bottom: 18px;
+      color: var(--blue);
+      font: 750 0.72rem/1 var(--mono);
+    }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px 18px;
+      border-left: 4px solid var(--blue);
+      border-radius: 0 10px 10px 0;
+      background: var(--blue-soft);
+    }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout.invariant { border-color: var(--green); background: var(--green-soft); }
+    .callout.tradeoff { border-color: var(--amber); background: var(--amber-soft); }
+    .callout.limit { border-color: var(--red); background: var(--red-soft); }
+    .label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 7px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      color: var(--blue);
+      background: var(--blue-soft);
+      font: 750 0.66rem/1 var(--mono);
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+    .label.invariant { color: var(--green); background: var(--green-soft); }
+    .label.tradeoff { color: var(--amber); background: var(--amber-soft); }
+    .label.limit { color: var(--red); background: var(--red-soft); }
+    .label.trust { color: var(--violet); background: var(--violet-soft); }
+
+    .architecture {
+      padding: 24px;
+      border: 1px solid #263b5b;
+      border-radius: var(--radius);
+      color: #e7eef7;
+      background: #111d30;
+      box-shadow: var(--shadow);
+    }
+    .arch-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 24px;
+      align-items: stretch;
+    }
+    .arch-row, .flow, .limit-list { padding-left: 0; list-style: none; }
+    .arch-row + .arch-row { margin-top: 28px; }
+    .arch-node {
+      position: relative;
+      min-height: 104px;
+      padding: 15px;
+      border: 1px solid #3b5274;
+      border-radius: 11px;
+      background: #182944;
+    }
+    .arch-node::after {
+      position: absolute;
+      top: 50%;
+      left: calc(100% + 6px);
+      width: 12px;
+      content: "→";
+      color: #74bbed;
+      transform: translateY(-50%);
+    }
+    .arch-node:last-child::after { display: none; }
+    .arch-node b { display: block; margin-bottom: 6px; color: white; font-size: 0.96rem; }
+    .arch-node span { display: block; color: #afc0d6; font-size: 0.79rem; line-height: 1.45; }
+    .arch-row.secondary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .arch-row.secondary .arch-node { min-height: 88px; background: #132238; }
+    .architecture figcaption { margin-top: 18px; color: #9eb1c8; font-size: .82rem; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(100px, 1fr));
+      gap: 18px;
+      margin: 18px 0;
+    }
+    .flow-step {
+      position: relative;
+      padding: 16px 13px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: white;
+    }
+    .flow-step::after {
+      position: absolute;
+      top: 50%;
+      left: calc(100% + 4px);
+      content: "→";
+      color: var(--blue);
+      font-weight: 800;
+      transform: translateY(-50%);
+    }
+    .flow-step:last-child::after { display: none; }
+    .flow-step + .flow-step { margin-top: 0; }
+    .flow-step b { display: block; color: var(--blue); font: 750 .7rem/1 var(--mono); }
+    .flow-step span { display: block; margin-top: 8px; font-size: .82rem; line-height: 1.42; }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 18px 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: white;
+      box-shadow: var(--shadow);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    th, td {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    thead th {
+      color: #39475a;
+      background: #edf1f5;
+      font: 750 .69rem/1.3 var(--mono);
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+    tbody th[scope="row"] {
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      letter-spacing: normal;
+      text-transform: none;
+    }
+    tr:last-child :is(th, td) { border-bottom: 0; }
+    td p:last-child { margin-bottom: 0; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      clip-path: inset(50%);
+    }
+    .yes { color: var(--green); font-weight: 750; }
+    .no { color: var(--red); font-weight: 750; }
+    .partial { color: var(--amber); font-weight: 750; }
+
+    .decision-list { display: grid; gap: 14px; }
+    .decision {
+      display: grid;
+      grid-template-columns: 74px minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: white;
+      box-shadow: var(--shadow);
+    }
+    .decision-id {
+      display: grid;
+      place-items: center;
+      color: #cce6fa;
+      background: var(--navy-2);
+      font: 800 0.8rem/1 var(--mono);
+    }
+    .decision-body { padding: 18px 20px; }
+    .decision-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1fr;
+      gap: 16px;
+      margin-top: 12px;
+    }
+    .decision-grid div {
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .86rem;
+    }
+    .decision-grid b {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font: 750 .67rem/1.2 var(--mono);
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .limit-list { display: grid; gap: 10px; }
+    .limit-row {
+      display: grid;
+      grid-template-columns: 118px 1.2fr 1fr 1fr;
+      gap: 14px;
+      padding: 15px 16px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: white;
+    }
+    .limit-row > div { min-width: 0; font-size: .86rem; }
+    .limit-row b { display: block; margin-bottom: 4px; }
+    .status {
+      align-self: start;
+      justify-self: start;
+      padding: 5px 7px;
+      border-radius: 999px;
+      font: 750 .64rem/1 var(--mono);
+      text-transform: uppercase;
+    }
+    .status.accepted { color: var(--amber); background: var(--amber-soft); }
+    .status.deferred { color: var(--red); background: var(--red-soft); }
+    .status.unsupported { color: var(--violet); background: var(--violet-soft); }
+    .status.boundary { color: var(--blue); background: var(--blue-soft); }
+
+    .source-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 0;
+      list-style: none;
+    }
+    .source-list li {
+      margin: 0;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: white;
+    }
+    .source-list a { font-family: var(--mono); font-size: .83rem; }
+    .source-list span { display: block; margin-top: 3px; color: var(--muted); font-size: .8rem; }
+
+    .footer {
+      padding: 28px max(24px, calc((100vw - 1380px) / 2));
+      color: #aebfd2;
+      background: var(--navy);
+      font-size: .83rem;
+    }
+    .footer strong { color: white; }
+
+    @media (max-width: 1080px) {
+      .page { grid-template-columns: 1fr; }
+      .toc { position: static; max-height: none; columns: 2; }
+      .toc-title { column-span: all; }
+      .principles, .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .arch-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .arch-node::after { display: none; }
+      .flow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .flow-step::after { display: none; }
+      .limit-row { grid-template-columns: 110px 1fr 1fr; }
+      .limit-row > :last-child { grid-column: 2 / -1; }
+    }
+    @media (max-width: 720px) {
+      .hero { padding: 54px 24px 40px; }
+      .page { width: min(100% - 28px, 1380px); padding-top: 20px; }
+      .toc { columns: 1; }
+      .grid-2, .grid-3, .principles, .source-list { grid-template-columns: 1fr; }
+      .arch-row, .arch-row.secondary { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .decision { grid-template-columns: 1fr; }
+      .decision-id { min-height: 42px; }
+      .decision-grid { grid-template-columns: 1fr; }
+      .limit-row { grid-template-columns: 1fr; }
+      .limit-row > :last-child { grid-column: auto; }
+      .section-head { grid-template-columns: 38px minmax(0, 1fr); }
+      .section-no { width: 34px; height: 34px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+    @media print {
+      :root { --paper: white; --shadow: none; }
+      body { font-size: 11pt; }
+      .hero { padding: 28px; background: var(--navy); }
+      .page { display: block; width: 100%; padding: 24px; }
+      .toc { display: none; }
+      section { break-inside: avoid-page; margin-bottom: 30px; }
+      .panel, .architecture, .table-wrap, .decision, .limit-row { box-shadow: none; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#content">Skip to design</a>
+
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Canonical · retroactive design document</p>
+      <h1><span>orc</span> system design</h1>
+      <p class="lede">
+        A deterministic TypeScript orchestration runtime: the program is replayed,
+        real agent work is journaled, and one supervisor owns the boundary between them.
+      </p>
+      <div class="meta" role="list" aria-label="Document metadata">
+        <span role="listitem">status · accepted current design</span>
+        <span role="listitem">product · orc v0.1</span>
+        <span role="listitem">updated · 2026-07-19</span>
+        <span role="listitem">scope · repository design</span>
+        <span role="listitem">form · standalone HTML</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="page">
+    <aside class="toc">
+      <div class="toc-title">Contents</div>
+      <nav aria-label="Design document sections">
+        <a href="#contract">01 · Document contract</a>
+        <a href="#principles">02 · Goals and principles</a>
+        <a href="#map">03 · System map</a>
+        <a href="#programming">04 · Programming model</a>
+        <a href="#replay">05 · Determinism and replay</a>
+        <a href="#persistence">06 · Persistence model</a>
+        <a href="#supervisor">07 · Supervisor lifecycle</a>
+        <a href="#adapters">08 · Harnesses and executors</a>
+        <a href="#permissions">09 · Permissions</a>
+        <a href="#surfaces">10 · Product surfaces</a>
+        <a href="#decisions">11 · Decision ledger</a>
+        <a href="#limits">12 · Known limits</a>
+        <a href="#verification">13 · Verification</a>
+        <a href="#glossary">14 · Glossary and sources</a>
+      </nav>
+    </aside>
+
+    <main id="content">
+      <section id="contract">
+        <div class="section-head">
+          <div class="section-no">01</div>
+          <div>
+            <h2>Document contract</h2>
+            <p class="section-lede">
+              This is the canonical explanation of why orc is shaped this way.
+              Code and tests remain the executable truth for exact behavior.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <article class="panel">
+            <span class="label invariant">Normative</span>
+            <h3>What this document owns</h3>
+            <ul>
+              <li>System boundaries and sources of truth.</li>
+              <li>Replay, durability, permission, and lifecycle promises.</li>
+              <li>Deliberate tradeoffs and the reasons they were accepted.</li>
+              <li>Conditions that should cause a decision to be revisited.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <span class="label">Descriptive</span>
+            <h3>What remains in code</h3>
+            <ul>
+              <li>Wire-protocol fields and harness-version compatibility.</li>
+              <li>Policy constants, CLI flag details, and visual styling.</li>
+              <li>Point-in-time audit findings and remediation status.</li>
+              <li>Test counts, model catalogs, pricing, and dependency versions.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="callout invariant">
+          <span class="label invariant">Core thesis</span>
+          <p>
+            <strong>The deterministic program decides what work exists; the supervisor decides
+            when and whether that work may run; harnesses and executors perform the real work.</strong>
+            The journal is the durable handshake between those worlds.
+          </p>
+        </div>
+
+        <p>
+          When this document and the implementation disagree, treat that as design drift to resolve.
+          Do not silently promote an accidental implementation detail into a product promise, and do
+          not preserve prose that the code cannot honestly support.
+        </p>
+      </section>
+
+      <section id="principles">
+        <div class="section-head">
+          <div class="section-no">02</div>
+          <div>
+            <h2>Goals, non-goals, and principles</h2>
+            <p class="section-lede">
+              Orc chooses a small durable core and delegates everything else to native tools.
+            </p>
+          </div>
+        </div>
+
+        <div class="principles">
+          <article class="principle">
+            <span class="num">P-01</span>
+            <h3>Promises are the graph</h3>
+            <p>Ordinary async control flow expresses fan-out, joins, data dependencies, and failure handling. No parallel DAG API is maintained beside the language.</p>
+          </article>
+          <article class="principle">
+            <span class="num">P-02</span>
+            <h3>Record facts, then replay</h3>
+            <p>Orc records call identity and completion order. Resume re-executes the pinned program and delivers those durable facts rather than checkpointing a VM heap.</p>
+          </article>
+          <article class="principle">
+            <span class="num">P-03</span>
+            <h3>One run is one directory</h3>
+            <p>Files, native locks, and content-addressed results replace a daemon and database. A run is inspectable and portable at the user-account boundary.</p>
+          </article>
+          <article class="principle">
+            <span class="num">P-04</span>
+            <h3>Native controls first</h3>
+            <p>Claude, Codex, the operating system, and SSH enforce what they already know how to enforce. Orc does not build a second shell, sandbox, transport, or policy language.</p>
+          </article>
+          <article class="principle">
+            <span class="num">P-05</span>
+            <h3>Fail closed, explain clearly</h3>
+            <p>Changed history, unknown authority, unsupported capability, or ambiguous resume fails loudly. Where certainty is impossible, the product lowers its promise.</p>
+          </article>
+          <article class="principle">
+            <span class="num">P-06</span>
+            <h3>YAGNI is architectural</h3>
+            <p>No distributed coordinator, remote agent, auth system, plugin scan, or recovery wizard exists until a demonstrated workflow requires one.</p>
+          </article>
+        </div>
+
+        <div class="grid-2" style="margin-top:16px">
+          <article class="panel">
+            <h3>Goals</h3>
+            <ul>
+              <li>Deterministic orchestration around nondeterministic AI work.</li>
+              <li>Concurrent promise-native leaf execution with bounded resources.</li>
+              <li>Crash-safe resume without repeating durably completed leaves.</li>
+              <li>Explicit write authority, approval bubbling, and live observability.</li>
+              <li>Shared registry-backed command semantics across CLI and MCP, with a thin SDK and direct monitor projection.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3>Non-goals</h3>
+            <ul>
+              <li>A distributed workflow service or multi-user control plane.</li>
+              <li>Exactly-once external side effects.</li>
+              <li>A universal side-effect sandbox for agent integrations.</li>
+              <li>Guaranteed remote process death over plain SSH.</li>
+              <li>Replay compatibility across arbitrary orc upgrades.</li>
+              <li>Automatic discovery of ambient plugins or extensions.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="map">
+        <div class="section-head">
+          <div class="section-no">03</div>
+          <div>
+            <h2>System map</h2>
+            <p class="section-lede">
+              The supervisor is the only component allowed to connect deterministic intent
+              to nondeterministic execution.
+            </p>
+          </div>
+        </div>
+
+        <figure class="architecture" aria-labelledby="architecture-caption">
+          <div class="arch-row" role="list" aria-label="Execution path, in order">
+            <div class="arch-node" role="listitem"><b>Program author</b><span>Writes one async TypeScript function using agent(), parallel(), settle(), phase(), and ext.*.</span></div>
+            <div class="arch-node" role="listitem"><b>Compiler</b><span>Bundles the source into one frozen JavaScript artifact and hashes its exact bytes.</span></div>
+            <div class="arch-node" role="listitem"><b>QuickJS VM</b><span>Runs deterministic control flow and emits sequenced leaf specifications.</span></div>
+            <div class="arch-node" role="listitem"><b>Supervisor</b><span>Validates, journals, schedules, budgets, retries, controls, and delivers completions.</span></div>
+            <div class="arch-node" role="listitem"><b>Harness + executor</b><span>Maps one leaf onto Claude or Codex, locally or through system SSH.</span></div>
+          </div>
+          <div class="arch-row secondary" role="list" aria-label="Run artifacts and surfaces">
+            <div class="arch-node" role="listitem"><b>Durable facts</b><span>manifest · frozen bundle · journal · result bodies</span></div>
+            <div class="arch-node" role="listitem"><b>Observations</b><span>attempt traces · tool calls · logs · tokens · estimated/exact cost</span></div>
+            <div class="arch-node" role="listitem"><b>Controls</b><span>cancel and approval decisions appended by CLI, SDK, MCP, or UI</span></div>
+            <div class="arch-node" role="listitem"><b>Projections</b><span>status · wait · trace · static report · live waterfall monitor</span></div>
+          </div>
+          <figcaption id="architecture-caption">
+            At the VM and durable-value boundary, program values are canonical JSON; harness
+            output enters core as normalized events. Trusted registry objects remain live host
+            code. Result bodies never flow through the journal inline.
+          </figcaption>
+        </figure>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Package boundaries and responsibilities</caption>
+            <thead>
+              <tr><th>Package</th><th>Stable responsibility</th><th>Must not own</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row"><code>@orc/core</code></th><td>Contracts, QuickJS engine, run files, replay, supervisor, status, policy, canonical JSON.</td><td>Agent-vendor wire protocols or user-facing command rendering.</td></tr>
+              <tr><th scope="row"><code>@orc/executors</code></th><td>Local process groups, SSH transport, quoting, stream lifecycle, environment checks.</td><td>Agent semantics, approvals, replay, or result validation.</td></tr>
+              <tr><th scope="row"><code>@orc/harness-*</code></th><td>Vendor protocol mapping, capability discovery, sessions, approvals, normalized events.</td><td>Run ownership, durable state, scheduling, or cross-leaf policy.</td></tr>
+              <tr><th scope="row"><code>@orc/ops</code></th><td>Zod-first operation registry, built-in assembly, detached supervisor startup.</td><td>Separate behavior for each product surface.</td></tr>
+              <tr><th scope="row"><code>@orc/cli</code></th><td>Interpret operations as commands and flags.</td><td>A second command schema or orchestration implementation.</td></tr>
+              <tr><th scope="row"><code>@orc/sdk</code></th><td>Typed ergonomic wrappers around operations and run watching.</td><td>SDK-only execution semantics.</td></tr>
+              <tr><th scope="row"><code>@orc/mcp</code></th><td>Expose operations as stdio tools with coarse <code>readOnlyHint</code> classification.</td><td>Independent schemas or permission guarantees.</td></tr>
+              <tr><th scope="row"><code>@orc/ui</code></th><td>Pure projection, standalone reports, loopback SSE monitor, controls.</td><td>Authoritative run state or hidden control logic.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="programming">
+        <div class="section-head">
+          <div class="section-no">04</div>
+          <div>
+            <h2>Programming model</h2>
+            <p class="section-lede">
+              An orc program is a deterministic coordinator, not a privileged automation script.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <pre tabindex="0" role="region" aria-label="Example orc program"><code>import type { Program } from "@orc/sdk/program";
+
+const program: Program = async ({ agent, parallel, phase }) =&gt; {
+  const inventory = await agent("List the modules.", {
+    schema: {
+      type: "object",
+      properties: {
+        modules: { type: "array", items: { type: "string" } }
+      },
+      required: ["modules"]
+    }
+  }) as { modules: string[] };
+
+  const audits = await parallel(
+    inventory.modules.map((name) =&gt; ({
+      id: `audit-${name}`,
+      prompt: `Audit ${name}`
+    }))
+  );
+
+  return phase("synthesis", () =&gt;
+    agent(`Synthesize: ${JSON.stringify(audits)}`));
+};
+
+export default program;</code></pre>
+          <article class="panel">
+            <h3>Program-visible primitives</h3>
+            <ul>
+              <li><code>agent(prompt, options)</code> creates one journaled leaf.</li>
+              <li><code>parallel(specs)</code> starts independent lanes and returns settled outcomes.</li>
+              <li><code>settle(promise)</code> converts one rejection into data the program may handle.</li>
+              <li><code>phase(name, fn)</code> lexically labels calls, including across awaits.</li>
+              <li><code>ext.name(payload)</code> invokes a trusted, explicitly registered host extension.</li>
+              <li><code>log(message)</code> records orchestration narrative outside deterministic state.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="grid-3" style="margin-top:16px">
+          <article class="panel">
+            <span class="label invariant">Identity</span>
+            <h3>Call order assigns sequence</h3>
+            <p>A leaf receives the next sequence number when the VM dispatches it. Its canonical specification digest becomes replay identity.</p>
+          </article>
+          <article class="panel">
+            <span class="label invariant">Isolation</span>
+            <h3>Agent context starts fresh</h3>
+            <p>Each invocation gets its own prompt/session context and the shared brief. Program-level results move as explicit JSON; leaves may still observe shared filesystem or external state.</p>
+          </article>
+          <article class="panel">
+            <span class="label tradeoff">Constraint</span>
+            <h3>JSON is the value boundary</h3>
+            <p>No functions, accessors, sparse arrays, cycles, non-finite numbers, or class instances cross the VM, journal, harness, or result boundary.</p>
+          </article>
+        </div>
+
+        <div class="callout tradeoff">
+          <span class="label tradeoff">Product effect</span>
+          <p>
+            Authors gain ordinary TypeScript async composition and lose ambient runtime power:
+            no clock, randomness, filesystem, network, or runtime module loading inside the program.
+            Real-world work belongs in leaves.
+          </p>
+        </div>
+      </section>
+
+      <section id="replay">
+        <div class="section-head">
+          <div class="section-no">05</div>
+          <div>
+            <h2>Determinism and replay</h2>
+            <p class="section-lede">
+              Orc does not serialize a VM. It recreates the VM and replays durable completions.
+            </p>
+          </div>
+        </div>
+
+        <ol class="flow" aria-label="One live leaf completion">
+          <li class="flow-step"><b>01 · CALL</b><span>VM emits a canonical leaf spec and sequence.</span></li>
+          <li class="flow-step"><b>02 · CHECK</b><span>Supervisor applies caps, write gate, extension schema, and identity.</span></li>
+          <li class="flow-step"><b>03 · WAL</b><span>Call and attempt records are appended before dispatch.</span></li>
+          <li class="flow-step"><b>04 · RUN</b><span>Harness executes through the chosen executor.</span></li>
+          <li class="flow-step"><b>05 · VALIDATE</b><span>Result becomes strict canonical JSON and is schema checked.</span></li>
+          <li class="flow-step"><b>06 · COMMIT</b><span>Result body is stored; completion is fsynced.</span></li>
+          <li class="flow-step"><b>07 · DELIVER</b><span>Exactly one promise settles, then QuickJS drains to quiescence.</span></li>
+        </ol>
+
+        <div class="grid-2">
+          <article class="panel">
+            <h3 class="label invariant">Replay invariants</h3>
+            <ul>
+              <li>The exact frozen bundle must match its manifest hash.</li>
+              <li>Every replayed call must match sequence and specification digest.</li>
+              <li>A completion must target a promise the replayed program actually requested.</li>
+              <li>Every historical call suffix must be re-created or remain legitimately pending.</li>
+              <li>Completion delivery order is journal order, not sequence order.</li>
+              <li>Each delivery is followed by a complete deterministic microtask drain.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3 class="label limit">Loud divergence</h3>
+            <p>Resume refuses to guess when it sees:</p>
+            <ul>
+              <li>a changed program bundle;</li>
+              <li>a changed leaf specification;</li>
+              <li>a dangling completion;</li>
+              <li>an unconsumed historical call suffix;</li>
+              <li>committed JSONL corruption; or</li>
+              <li>an ambiguous terminal failure frontier.</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="callout invariant">
+          <span class="label invariant">Run-once boundary</span>
+          <p>
+            A leaf with a durable effective <code>done</code> record is not dispatched again.
+            This is logical run-once execution, not physical exactly-once side effects:
+            work interrupted before durable completion may still exist externally and may be retried or re-oriented.
+          </p>
+        </div>
+      </section>
+
+      <section id="persistence">
+        <div class="section-head">
+          <div class="section-no">06</div>
+          <div>
+            <h2>Persistence and sources of truth</h2>
+            <p class="section-lede">
+              Every run is inspectable under <code>$ORC_HOME/runs/&lt;run-id&gt;</code>,
+              defaulting to <code>~/.orc/runs/&lt;run-id&gt;</code>.
+            </p>
+          </div>
+        </div>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Run artifacts, authority, and durability</caption>
+            <thead>
+              <tr><th>Artifact</th><th>Purpose</th><th>Authority</th><th>Durability / integrity</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row"><code>manifest.json</code></th><td>Pinned launch configuration, program digest, permission and policy inputs.</td><td><span class="yes">Authoritative</span></td><td>Immutable after creation by design.</td></tr>
+              <tr><th scope="row"><code>program.bundle.js</code></th><td>Exact code executed live and during replay.</td><td><span class="yes">Authoritative</span></td><td>SHA-256 checked against manifest before supervision.</td></tr>
+              <tr><th scope="row"><code>journal.jsonl</code></th><td>Calls, attempts, cumulative attempt costs, completions, retry markers, terminal finish.</td><td><span class="yes">Authoritative</span></td><td>Append-only; fsync per append; only an unterminated tail is recoverable.</td></tr>
+              <tr><th scope="row"><code>results/&lt;sha&gt;.json</code></th><td>Canonical leaf and final result bodies.</td><td><span class="yes">Authoritative</span></td><td>Content-addressed; body digest checked on read.</td></tr>
+              <tr><th scope="row"><code>traces.jsonl</code></th><td>Attempt revisions, timings, tools, model, session, logs, token detail.</td><td><span class="partial">Observational</span></td><td>Append-only sidecar; journal facts drive deterministic state, while legacy cost and abandoned-approval recovery still consult traces.</td></tr>
+              <tr><th scope="row"><code>control.jsonl</code></th><td>Cancel requests and approval decisions from external surfaces.</td><td><span class="partial">Input channel</span></td><td>Append-only and fsynced; finish records scope consumed controls to an ownership epoch.</td></tr>
+              <tr><th scope="row"><code>report.html</code></th><td>Static projection of current state.</td><td><span class="no">Derived</span></td><td>Atomically replaced; safe to regenerate or delete.</td></tr>
+              <tr><th scope="row"><code>supervisor.lock</code></th><td>Path used by a native advisory lock holder.</td><td><span class="partial">Liveness</span></td><td>Kernel ownership matters; file contents do not.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2">
+          <article class="panel">
+            <h3>Why the journal is body-free</h3>
+            <p>
+              Completion records reference result digests instead of embedding large bodies.
+              This keeps replay metadata small, makes identical values naturally deduplicate,
+              and allows body integrity to be checked independently.
+            </p>
+          </article>
+          <article class="panel">
+            <h3>Why traces are not truth</h3>
+            <p>
+              Traces are useful and lossy: they can contain multiple revisions. Current durable
+              completions and costs in the journal override sidecar detail whenever the two
+              disagree. The supervisor still consults traces for legacy cost and abandoned-approval
+              recovery, so “observational” describes the authority boundary rather than zero runtime use.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="supervisor">
+        <div class="section-head">
+          <div class="section-no">07</div>
+          <div>
+            <h2>Supervisor lifecycle</h2>
+            <p class="section-lede">
+              One supervisor owns one run from replay preflight until all write-capable work has stopped.
+            </p>
+          </div>
+        </div>
+
+        <ol class="flow" aria-label="Supervisor lifecycle">
+          <li class="flow-step"><b>OWN</b><span>Acquire native advisory lock; detect holder loss.</span></li>
+          <li class="flow-step"><b>OPEN</b><span>Open appenders and control watcher.</span></li>
+          <li class="flow-step"><b>REPLAY</b><span>Verify program and deliver effective history.</span></li>
+          <li class="flow-step"><b>RE-ARM</b><span>Persist retry only after clean replay.</span></li>
+          <li class="flow-step"><b>EXECUTE</b><span>Dispatch up to maxParallel and process controls.</span></li>
+          <li class="flow-step"><b>FINISH</b><span>Append terminal record and abort remaining work.</span></li>
+          <li class="flow-step"><b>DRAIN</b><span>Wait for writers, bound readers, close files, release lock.</span></li>
+        </ol>
+
+        <div class="grid-3">
+          <article class="panel">
+            <span class="label invariant">Concurrency</span>
+            <h3>Bounded dispatch</h3>
+            <p>The supervisor uses one run-wide <code>maxParallel</code> pool. There is no implicit write serialization or per-host quota; completion timing varies and the journal freezes the order observed.</p>
+          </article>
+          <article class="panel">
+            <span class="label tradeoff">Retry</span>
+            <h3>Read and write differ</h3>
+            <p>Retryable read-only failures receive a bounded number of fresh attempts. Write leaves never auto-retry during a live run.</p>
+          </article>
+          <article class="panel">
+            <span class="label invariant">Shutdown</span>
+            <h3>Safety before availability</h3>
+            <p>Ownership remains held until write tasks settle. Abort-resistant read-only tasks receive a short bounded grace so they cannot wedge the run forever.</p>
+          </article>
+        </div>
+
+        <h3 style="margin-top:24px">Fail-forward resume</h3>
+        <ol>
+          <li>Rebuild the effective completion set by applying append-only retry markers.</li>
+          <li>Replay the pinned program and verify all historical call identities.</li>
+          <li>Automatically retry only an unambiguous terminal causal failure.</li>
+          <li>Preserve failures the program already caught and observed as data.</li>
+          <li>For an unfinished or retried write leaf, prepend current working-tree state and instruct the agent to inspect before acting.</li>
+          <li>Never rewind durable history and never blindly repeat a write.</li>
+        </ol>
+
+        <div class="grid-2">
+          <article class="panel">
+            <h3>Budget enforcement</h3>
+            <p>
+              Each attempt start and its latest cumulative reported cost are journaled.
+              The supervisor sums all attempts, including retries, marks the run failed, and
+              aborts in-flight leaves when observed spend passes <code>budgetUsd</code>.
+            </p>
+          </article>
+          <article class="panel">
+            <h3>Control epochs</h3>
+            <p>
+              Finish records store how far the owner consumed <code>control.jsonl</code>.
+              A new owner starts from that durable offset, expires abandoned approvals,
+              and does not replay stale authorization into resumed work.
+            </p>
+          </article>
+        </div>
+
+        <div class="callout tradeoff">
+          <span class="label tradeoff">Budget semantics</span>
+          <p>
+            The budget is a reactive stop-on-observed-spend cap, not a prepaid reservation.
+            Usage reports arrive after work has consumed tokens, and concurrent leaves may report
+            together, so the final amount can exceed the configured threshold.
+          </p>
+        </div>
+      </section>
+
+      <section id="adapters">
+        <div class="section-head">
+          <div class="section-no">08</div>
+          <div>
+            <h2>Harnesses, executors, and extensions</h2>
+            <p class="section-lede">
+              Vendor protocols and transport details terminate at narrow interfaces.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <article class="panel">
+            <span class="label">Harness contract</span>
+            <h3>One leaf in, normalized events out</h3>
+            <p>
+              A harness discovers capabilities and invokes a <code>LeafRequest</code>.
+              It emits normalized model/session, tool, usage, denial, result, and error events.
+              Core shape-checks events and validates the delivered result, but trusts adapter
+              cardinality and the size of observational payloads.
+            </p>
+          </article>
+          <article class="panel">
+            <span class="label">Executor contract</span>
+            <h3>One argv, local or SSH</h3>
+            <p>
+              Executors spawn commands, collect output, and expose basic file operations.
+              Host and working directory remain separate fields; shell quoting exists only
+              at the SSH boundary.
+            </p>
+          </article>
+        </div>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Built-in adapter execution paths and behavior</caption>
+            <thead>
+              <tr><th>Adapter</th><th>Local path</th><th>Remote path</th><th>Important behavior</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row"><strong>Claude</strong></th>
+                <td>Anthropic Agent SDK controlling the system Claude CLI.</td>
+                <td>Claude CLI stream-JSON through the executor.</td>
+                <td>Native structured output and sessions. Remote v1 supports only <code>auto</code>/<code>bypass</code> because no approval back-channel exists; requested reasoning effort is not yet forwarded to the remote CLI.</td>
+              </tr>
+              <tr>
+                <th scope="row"><strong>Codex</strong></th>
+                <td colspan="2"><code>codex app-server</code> JSON-RPC spawned through the selected executor.</td>
+                <td>The same wire protocol works locally and over SSH; model discovery uses native <code>model/list</code>; strict output schemas are normalized and restored.</td>
+              </tr>
+              <tr>
+                <th scope="row"><strong>Local executor</strong></th>
+                <td>Detached process group with TERM then KILL escalation.</td>
+                <td>—</td>
+                <td>Group signaling includes descendants; stdout/stderr drain is bounded after leader exit.</td>
+              </tr>
+              <tr>
+                <th scope="row"><strong>SSH executor</strong></th>
+                <td colspan="2">System <code>ssh</code>, BatchMode, no TTY, option terminator, remote <code>zsh -lc</code>.</td>
+                <td>Reuses SSH config, agents, ProxyJump, and login PATH. Channel teardown does not prove the remote process died.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2">
+          <article class="panel">
+            <span class="label trust">Trusted extension seam</span>
+            <h3>Explicit configuration only</h3>
+            <p>
+              <code>orc.config.*</code> may register in-process harnesses, NDJSON executables,
+              cost rates, and <code>defineLeaf</code> extensions. There is no ambient scan.
+              Extension registration—not the program—owns its <code>readOnly</code> metadata.
+            </p>
+          </article>
+          <article class="panel">
+            <span class="label limit">Trust boundary</span>
+            <h3>Custom code can lie</h3>
+            <p>
+              Core validates event shapes and declared result schemas, but it cannot prove a
+              custom harness or extension honored authority metadata, emitted one terminal event,
+              or bounded every trace payload. Configured adapters are trusted operator code.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="permissions">
+        <div class="section-head">
+          <div class="section-no">09</div>
+          <div>
+            <h2>Permission model</h2>
+            <p class="section-lede">
+              Write authority, approval behavior, and filesystem confinement are separate dimensions.
+            </p>
+          </div>
+        </div>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Permission controls and guarantees</caption>
+            <thead>
+              <tr><th>Control</th><th>Scope</th><th>Guarantee</th><th>Not a guarantee</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row"><code>allowWrites</code></th><td>Run manifest</td><td>A write-declared leaf cannot dispatch unless the run granted writes.</td><td>It does not itself confine where an allowed write leaf can write.</td></tr>
+              <tr><th scope="row"><code>readOnly</code></th><td>Leaf specification</td><td>Built-in command and file-mutation tools cannot be restored by approval or bypass mode.</td><td>Configured hooks and MCPs, including Computer Use, are not disabled; their side effects are outside the promise.</td></tr>
+              <tr><th scope="row"><code>approvalMode</code></th><td>Run manifest, mapped by harness</td><td>Controls whether native requests bridge to an operator, deny automatically, or run autonomously.</td><td>Approval is not filesystem confinement and cannot weaken <code>readOnly</code>.</td></tr>
+              <tr><th scope="row"><code>sandbox</code></th><td>Run manifest, write leaves only</td><td>Built-in write paths use native confinement to <code>cwd + sandboxDirs</code> and fail if the harness cannot enforce its boundary.</td><td>It is not a universal boundary around configured external integrations.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout invariant">
+          <span class="label invariant">Precedence</span>
+          <p>
+            <code>readOnly</code> wins over every approval mode. For a write leaf,
+            <code>sandbox:true</code> wins over bypass for filesystem roots.
+            The run-level <code>allowWrites</code> gate must be open before either path executes.
+          </p>
+        </div>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Approval-mode mapping by harness</caption>
+            <thead>
+              <tr><th>Approval mode</th><th>Product meaning</th><th>Claude</th><th>Codex</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row"><code>manual</code></th><td>Ask the operator for tool authority.</td><td>SDK callback locally; unsupported over SSH v1.</td><td>App-server approval requests bridge to controls.</td></tr>
+              <tr><th scope="row"><code>accept-edits</code></th><td>Permit native in-scope file edits; ask for other authority.</td><td>Native accept-edits locally; unsupported over SSH v1.</td><td>Auto-accept confined file changes; bridge commands and out-of-scope edits.</td></tr>
+              <tr><th scope="row"><code>auto</code></th><td>No interactive prompt; denied native requests are reported.</td><td><code>dontAsk</code>.</td><td><code>approvalPolicy: never</code>.</td></tr>
+              <tr><th scope="row"><code>bypass</code></th><td>Explicit autonomous authority for a write-capable leaf.</td><td>Dangerous skip only when neither read-only nor sandboxed.</td><td>Danger-full-access only when neither read-only nor sandboxed.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout tradeoff">
+          <span class="label tradeoff">Configured integration tradeoff</span>
+          <p>
+            Read-only leaves keep configured MCP eligibility in both built-in harnesses because
+            tools such as Computer Use are core product value. That narrows the promise to built-in
+            command/file mutation. Sandboxed Claude <em>write</em> leaves go further and isolate
+            inherited settings/MCP to protect declared roots; Codex relies on its native workspace
+            sandbox and does not expose an equivalent global MCP switch. Exact integration
+            availability is therefore not a cross-harness sandbox guarantee.
+          </p>
+        </div>
+      </section>
+
+      <section id="surfaces">
+        <div class="section-head">
+          <div class="section-no">10</div>
+          <div>
+            <h2>Registry operations, SDK, and monitor</h2>
+            <p class="section-lede">
+              CLI and MCP exhaustively interpret one operation registry. The SDK wraps selected
+              operations; the monitor projects run files directly.
+            </p>
+          </div>
+        </div>
+
+        <div class="architecture" role="group" aria-label="Registry-backed product surface flow">
+          <div class="arch-row" role="list" aria-label="Registry-backed surface flow, in order" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+            <div class="arch-node" role="listitem"><b>Zod-first operations</b><span>Name · documentation · mutation hint · input schema · handler</span></div>
+            <div class="arch-node" role="listitem"><b>CLI · exhaustive</b><span>Commands, help, arrays, negated flags, and JSON catalog generated at runtime</span></div>
+            <div class="arch-node" role="listitem"><b>MCP · exhaustive</b><span>Same handlers and schemas as stdio tools with readOnlyHint annotations</span></div>
+            <div class="arch-node" role="listitem"><b>SDK · selected facade</b><span>Zod input types plus ergonomic Orc and OrcRun wrappers for common workflows</span></div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-top:16px">
+          <article class="panel">
+            <h3>What “surface equivalence” means</h3>
+            <p>Where a surface is registry-backed, it shares the input schema and handler. It does not mean identical coverage, output transport, or interaction style across CLI, MCP, SDK, and UI.</p>
+          </article>
+          <article class="panel">
+            <h3>The monitor is deliberately direct</h3>
+            <p>The UI reads journals and traces and appends controls without interpreting <code>ALL_OPS</code>. This keeps a local projection simple, but control validation must not be assumed equivalent to CLI, MCP, or SDK.</p>
+          </article>
+        </div>
+
+        <div class="callout tradeoff">
+          <span class="label tradeoff">Two meanings of read-only</span>
+          <p>
+            <code>OpDef.readOnly</code> is a coarse MCP/command mutation hint, not a security
+            boundary or purity claim: <code>report</code> writes a derived file and
+            <code>open</code> may start a local server or browser. Leaf <code>readOnly</code>
+            is the harness permission contract described above. They must not be conflated.
+          </p>
+        </div>
+
+        <div class="grid-3" style="margin-top:16px">
+          <article class="panel">
+            <h3>Detached launch</h3>
+            <p>A package-owned child entry builds the same registry, acquires ownership, and returns success only after an IPC ready signal or a concrete startup error.</p>
+          </article>
+          <article class="panel">
+            <h3>Status projection</h3>
+            <p>Journal facts establish calls, attempts, completions, retries, and finish. Latest trace revisions overlay timing, harness, and running detail.</p>
+          </article>
+          <article class="panel">
+            <h3>Bounded waiting</h3>
+            <p>The registry <code>wait</code> operation returns timeout and retry-handoff detail. The SDK’s ergonomic <code>OrcRun.wait()</code> returns only the latest status.</p>
+          </article>
+        </div>
+
+        <h3 style="margin-top:24px">Monitor design</h3>
+        <div class="grid-2">
+          <article class="panel">
+            <h4 class="label">Static report</h4>
+            <p>
+              Each run gets a self-contained <code>report.html</code>. It is a projection, written
+              with temporary-file plus rename, and may auto-refresh while the run is active.
+            </p>
+          </article>
+          <article class="panel">
+            <h4 class="label">Live monitor</h4>
+            <p>
+              A framework-free Node HTTP server binds loopback, renders the same projection,
+              and sends lightweight SSE ticks. The browser refetches HTML fragments; the server
+              does not maintain a second state store.
+            </p>
+          </article>
+        </div>
+
+        <div class="callout tradeoff">
+          <span class="label tradeoff">Projection rule</span>
+          <p>
+            The UI may be stale or absent without changing run correctness. A journal record can
+            change deterministic state; a trace or report can only explain it.
+          </p>
+        </div>
+      </section>
+
+      <section id="decisions">
+        <div class="section-head">
+          <div class="section-no">11</div>
+          <div>
+            <h2>Decision ledger</h2>
+            <p class="section-lede">
+              These choices are intentional. Each includes the cost and a concrete reason to reconsider it.
+            </p>
+          </div>
+        </div>
+
+        <div class="decision-list">
+          <article class="decision">
+            <div class="decision-id">D-01</div>
+            <div class="decision-body">
+              <h3>Use promise structure instead of a graph API</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Async TypeScript already expresses dependencies, joins, branches, and failure handling.</div>
+                <div><b>Cost</b>The complete future graph is not statically visible; validation can preview only the first frontier.</div>
+                <div><b>Revisit when</b>Users need graph-wide scheduling or visualization before any leaf runs.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-02</div>
+            <div class="decision-body">
+              <h3>Replay a frozen bundle instead of checkpointing VM state</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Call identity plus durable completions is smaller, inspectable, and independent of QuickJS heap serialization.</div>
+                <div><b>Cost</b>The program must remain deterministic and cannot use ambient time, randomness, or I/O.</div>
+                <div><b>Revisit when</b>Required programs cannot be expressed as deterministic orchestration around leaves.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-03</div>
+            <div class="decision-body">
+              <h3>Use per-run files instead of a daemon or database</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Single-user local operation needs persistence and inspection, not infrastructure.</div>
+                <div><b>Cost</b>No distributed ownership, transactional query engine, or multi-host control plane.</div>
+                <div><b>Revisit when</b>Runs must be shared, scheduled remotely, queried at scale, or coordinated across machines.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-04</div>
+            <div class="decision-body">
+              <h3>Freeze observed completion order</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Concurrent AI work is nondeterministic; replaying the order actually observed reproduces promise continuations.</div>
+                <div><b>Cost</b>Delivery is serialized one completion per VM drain even when several leaves finish together.</div>
+                <div><b>Revisit when</b>A new deterministic batch-delivery rule proves materially faster and can be versioned safely.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-05</div>
+            <div class="decision-body">
+              <h3>Store result bodies by digest</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Keeps the WAL body-free, verifies integrity, and naturally deduplicates identical JSON.</div>
+                <div><b>Cost</b>One logical completion spans a body file and journal record; full power-loss atomicity needs more filesystem work.</div>
+                <div><b>Revisit when</b>Result sizes or remote artifact storage justify a dedicated blob layer.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-06</div>
+            <div class="decision-body">
+              <h3>Fail forward; never rewind</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>External side effects cannot generally be rolled back. Durable observations must stay observed.</div>
+                <div><b>Cost</b>Ambiguous failures require a new run; write retries must inspect partial state and remain idempotent.</div>
+                <div><b>Revisit when</b>A domain supplies explicit compensation semantics or idempotency keys end to end.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-07</div>
+            <div class="decision-body">
+              <h3>Compose native permission controls</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Claude and Codex understand their tools and sandboxes better than a generic imitation.</div>
+                <div><b>Cost</b>The shared promise is intentionally narrower than each harness’s full behavior; some sandbox integration availability differs.</div>
+                <div><b>Revisit when</b>Native protocols expose a small common control that closes a demonstrated user-facing gap.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-08</div>
+            <div class="decision-body">
+              <h3>Use the system SSH client</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>SSH config, agents, ProxyJump, host aliases, and authentication work without another transport stack.</div>
+                <div><b>Cost</b>Closing the channel cannot prove a remote descendant stopped.</div>
+                <div><b>Revisit when</b>Confirmed remote cancellation is a real requirement; add a wrapper or remote agent then.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-09</div>
+            <div class="decision-body">
+              <h3>Share one registry where command semantics match</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>CLI and MCP commands, machine catalog, defaults, schemas, and handlers should not drift independently.</div>
+                <div><b>Cost</b>The SDK is intentionally partial and the UI is a direct projection; equivalence applies only to registry-backed paths.</div>
+                <div><b>Revisit when</b>A registry-backed surface needs semantics the shared handler cannot faithfully represent.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-10</div>
+            <div class="decision-body">
+              <h3>Require explicit extension registration</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Authority and replay dependencies should not change because an ambient package happened to be installed.</div>
+                <div><b>Cost</b>One config entry is required for custom harnesses and leaf kinds.</div>
+                <div><b>Revisit when</b>A signed, inspectable plugin catalog solves a demonstrated onboarding problem.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-11</div>
+            <div class="decision-body">
+              <h3>Keep the monitor local, derived, and framework-free</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>The filesystem already holds state; HTML fragments and SSE are enough for a live single-user monitor.</div>
+                <div><b>Cost</b>No remote sharing, multi-user auth, push service, or rich client state model.</div>
+                <div><b>Revisit when</b>The monitor binds beyond loopback or becomes a shared operational surface.</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="decision">
+            <div class="decision-id">D-12</div>
+            <div class="decision-body">
+              <h3>Do not support replay across arbitrary orc upgrades</h3>
+              <div class="decision-grid">
+                <div><b>Why</b>Versioned VM semantics and migrations would be a large system before v0.1 needs them.</div>
+                <div><b>Cost</b>The recorded version is not enforced and config/policy are not pinned; an old run can fail or continue under current adapter behavior.</div>
+                <div><b>Revisit when</b>Long-lived production runs must span deploys and a compatibility window is defined.</div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="limits">
+        <div class="section-head">
+          <div class="section-no">12</div>
+          <div>
+            <h2>Known limits and deferred work</h2>
+            <p class="section-lede">
+              These are honest ceilings, not an automatic backlog. Revisit only when the trigger becomes real.
+            </p>
+          </div>
+        </div>
+
+        <div class="limit-list" role="list" aria-label="Known limits and deferred work">
+          <div class="limit-row" role="listitem">
+            <span class="status boundary">Boundary</span>
+            <div><b>Configured integration side effects</b><code>readOnly</code> and <code>sandbox</code> cover built-in command/file paths, not all hooks or MCPs.</div>
+            <div><b>User effect</b>Computer Use remains valuable and available when configured, but “read-only” is not globally side-effect-free.</div>
+            <div><b>Revisit trigger</b>A high-assurance mode is required and both harness protocols expose a simple enforceable integration switch.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Remote cancellation is best-effort</b>Plain SSH confirms local channel teardown, not death of every remote process.</div>
+            <div><b>User effect</b>After stop, users must assume remote state may be unknown; an immediate resume could overlap surviving external work.</div>
+            <div><b>Revisit trigger</b>Users depend on confirmed remote stop enough to justify a wrapper or remote agent.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Budget overshoot</b>Spend is enforced after cumulative usage updates, without pre-reserving concurrent leaves.</div>
+            <div><b>User effect</b>A configured cap limits continued work but is not an exact billing ceiling.</div>
+            <div><b>Revisit trigger</b>Exact financial enforcement or provider-side reservation becomes available and necessary.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status deferred">Deferred</span>
+            <div><b>Power-loss durability</b>Journal/control appends and result temp files are fsynced, but all files and directory entries are not.</div>
+            <div><b>User effect</b>Process-crash recovery is the promise; sudden machine/storage loss may lose the newest rename or run creation.</div>
+            <div><b>Revisit trigger</b>Runs become valuable enough that power-loss recovery is a product requirement.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status deferred">YAGNI</span>
+            <div><b>Loopback monitor authentication</b>The monitor binds <code>127.0.0.1</code> and has no token or user system.</div>
+            <div><b>User effect</b>Local simplicity wins; a hostile local browser context remains a conditional control risk.</div>
+            <div><b>Revisit trigger</b>Remote binding, sharing, multi-user use, discoverable IDs, or a demonstrated browser exploit.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status unsupported">Unsupported</span>
+            <div><b>Runtime/config replay pinning</b>The manifest records <code>orcVersion</code>, but resume does not enforce it and rebuilds the current registry/config/policy.</div>
+            <div><b>User effect</b>Use the original compatible environment for an unfinished run or relaunch; otherwise it can fail divergence or continue under changed adapter behavior.</div>
+            <div><b>Revisit trigger</b>A supported compatibility window and migration ownership are explicitly funded.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status boundary">Boundary</span>
+            <div><b>First-frontier validation</b>Static validation sees calls made before unresolved leaf results, not every future dynamic branch.</div>
+            <div><b>User effect</b>A green preview lowers risk but runtime validation remains authoritative; it is not a launch token and the source can change afterward.</div>
+            <div><b>Revisit trigger</b>Authors need whole-graph preflight strongly enough to adopt a less dynamic programming model.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status deferred">Known gap</span>
+            <div><b>UI controls bypass operation validation</b>The monitor appends cancel and approval records directly instead of calling the registry handlers.</div>
+            <div><b>User effect</b>A stale page can enqueue a cancel for a finished run or answer an approval that is no longer pending; the owner may ignore it, but the UI does not return the same clear error as CLI, MCP, or SDK.</div>
+            <div><b>Revisit trigger</b>Fix with one shared validation helper when stale monitor actions cause real confusion.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status deferred">Known gap</span>
+            <div><b>Launch predicts the monitor URL</b>Launch returns the deterministic base port before a monitor has necessarily bound; the server may later fall back to one of the next 20 ports.</div>
+            <div><b>User effect</b>The launch link can be wrong when the base port is occupied; <code>orc open</code> discovers the actual URL.</div>
+            <div><b>Revisit trigger</b>Return only the static report at launch, or start/query the monitor before promising a URL.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status unsupported">Unsupported</span>
+            <div><b>Remote Claude reasoning effort</b>The remote harness records the requested effort but does not pass an effort flag to the Claude CLI.</div>
+            <div><b>User effect</b>The monitor can display the request while the remote model uses its native default.</div>
+            <div><b>Revisit trigger</b>The remote CLI exposes a stable effort flag and a focused adapter test can prove it.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Global-only concurrency</b>One run-wide <code>maxParallel</code> pool has no per-host quota and does not serialize write leaves.</div>
+            <div><b>User effect</b>A fan-out can saturate one host, and parallel writers can contend unless the program expresses their dependency.</div>
+            <div><b>Revisit trigger</b>Measured host saturation or recurring write conflicts justify one small scheduling control.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Heuristic transient retries</b>Read-only retryability excludes known deterministic errors using error-text matching.</div>
+            <div><b>User effect</b>An unfamiliar permanent error may consume extra attempts, while a newly worded transient error can be misclassified.</div>
+            <div><b>Revisit trigger</b>Harnesses expose stable structured error classes that can replace the text heuristic.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status boundary">Boundary</span>
+            <div><b>Trusted local run files</b>Digests protect pinned code and result bodies, but manifests, journals, controls, and traces are not an authenticated adversarial log.</div>
+            <div><b>User effect</b>Accidental corruption is often detected; a local actor with filesystem access remains inside the trust boundary.</div>
+            <div><b>Revisit trigger</b>Runs are imported, shared, or audited across mutually untrusted users or machines.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Whole-file projections</b>JSONL readers and status/report projections reread complete per-run files.</div>
+            <div><b>User effect</b>The simple design is easy to inspect but very long or highly chatty runs will eventually refresh more slowly.</div>
+            <div><b>Revisit trigger</b>Measured run sizes make refresh latency noticeable; add indexing only then.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>OS-local ownership</b>Native advisory locking supports macOS <code>lockf</code> and Linux <code>flock</code> on the local run directory.</div>
+            <div><b>User effect</b>Unsupported platforms fail closed; network-filesystem/distributed lock semantics are not promised.</div>
+            <div><b>Revisit trigger</b>Windows or shared-state deployments become supported targets.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Write-task liveness</b>The owner waits indefinitely for a local write task that ignores cancellation, preserving exclusivity over responsiveness.</div>
+            <div><b>User effect</b>Cancel/resume may wait; force-kill remains an operator action. Read-only tasks receive bounded grace.</div>
+            <div><b>Revisit trigger</b>A visible stopping state or kill escalation is needed for real uncooperative harnesses.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Detached resume handoff</b>Preflight releases ownership before the child acquires it; the child lock and readiness signal remain authoritative.</div>
+            <div><b>User effect</b>A concurrent resume may win the race and the other caller receives a startup error.</div>
+            <div><b>Revisit trigger</b>Concurrent resume becomes common enough to justify an ownership-transfer protocol.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status boundary">Boundary</span>
+            <div><b>Trusted adapters</b>Custom harnesses, extensions, config, and native agent integrations run with user authority.</div>
+            <div><b>User effect</b>Result/schema shapes are checked at delivery, but a malicious adapter can ignore permissions, emit multiple terminal events, or flood trace detail.</div>
+            <div><b>Revisit trigger</b>Untrusted third-party adapters become a supported distribution model.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status accepted">Accepted</span>
+            <div><b>Inline result ceiling</b>Program, leaf, prompt, and error caps protect memory and journal behavior; no automatic artifact spill exists.</div>
+            <div><b>User effect</b>Large inline answers fail clearly and must be summarized or written as separate artifacts.</div>
+            <div><b>Revisit trigger</b>Real workflows repeatedly need large structured results.</div>
+          </div>
+          <div class="limit-row" role="listitem">
+            <span class="status unsupported">Unsupported</span>
+            <div><b>Remote Claude interactive approvals</b>Manual and accept-edits lack an SSH approval back-channel in v1.</div>
+            <div><b>User effect</b>Those combinations fail closed; remote Claude uses auto or bypass.</div>
+            <div><b>Revisit trigger</b>The native protocol gains a simple supported back-channel or user demand justifies one.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="verification">
+        <div class="section-head">
+          <div class="section-no">13</div>
+          <div>
+            <h2>Executable design evidence</h2>
+            <p class="section-lede">
+              The test suite is organized around the boundary conditions that make this design credible.
+            </p>
+          </div>
+        </div>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Design claims and executable evidence</caption>
+            <thead>
+              <tr><th>Design claim</th><th>Primary executable evidence</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">Promise concurrency, strict VM boundary, policy caps, replay identity, and fail-forward resume.</th><td><a href="packages/core/test/determinism.test.ts"><code>packages/core/test/determinism.test.ts</code></a></td></tr>
+              <tr><th scope="row">Approval epochs, cancellation, crash recovery, and concurrent gates.</th><td><a href="packages/core/test/approvals.test.ts"><code>packages/core/test/approvals.test.ts</code></a></td></tr>
+              <tr><th scope="row">Retries, budget accounting, schema validation, shutdown, and extension contracts.</th><td><a href="packages/core/test/fixes.test.ts"><code>packages/core/test/fixes.test.ts</code></a></td></tr>
+              <tr><th scope="row">Run identity, JSONL crash recovery, native ownership, and contention.</th><td><a href="packages/core/test/rundir.test.ts"><code>packages/core/test/rundir.test.ts</code></a></td></tr>
+              <tr><th scope="row">Real SIGKILL recovery without redispatching durably completed leaves.</th><td><a href="packages/core/test/kill9.test.ts"><code>packages/core/test/kill9.test.ts</code></a></td></tr>
+              <tr><th scope="row">Local process groups, escalation, stream drainage, SSH quoting and destination safety.</th><td><a href="packages/executors/test/local.test.ts"><code>packages/executors/test/local.test.ts</code></a> · <a href="packages/executors/test/ssh-unit.test.ts"><code>ssh-unit.test.ts</code></a></td></tr>
+              <tr><th scope="row">Claude and Codex permission mapping, sessions, structured output, cancellation, and capability discovery.</th><td><a href="packages/harness-claude/test/harness.test.ts"><code>Claude harness tests</code></a> · <a href="packages/harness-codex/test/harness.test.ts"><code>Codex harness tests</code></a></td></tr>
+              <tr><th scope="row">Registry interpretation, detached readiness, SDK facade behavior, monitor identity, report projection, and live controls.</th><td><a href="packages/ops/test"><code>packages/ops/test</code></a> · <a href="packages/sdk/test"><code>packages/sdk/test</code></a> · <a href="packages/ui/test"><code>packages/ui/test</code></a></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2">
+          <article class="panel">
+            <h3>Repository checks</h3>
+            <pre tabindex="0"><code>npm run typecheck
+npm test
+npm run build
+npm run build:cli
+git diff --check</code></pre>
+          </article>
+          <article class="panel">
+            <h3>Live checks are opt-in</h3>
+            <pre tabindex="0"><code>ORC_CODEX_LIVE=1 \
+ORC_CLAUDE_LIVE=1 \
+ORC_SSH_TEST_HOST=frank \
+npx vitest run</code></pre>
+          </article>
+        </div>
+
+        <div class="callout invariant">
+          <span class="label invariant">Change protocol</span>
+          <p>
+            Update this document when a change alters replay identity, delivery order, durable
+            artifacts, permission promises, ownership, adapter trust, or surface equivalence.
+            Add the smallest runnable regression that would fail if the new invariant breaks.
+          </p>
+        </div>
+      </section>
+
+      <section id="glossary">
+        <div class="section-head">
+          <div class="section-no">14</div>
+          <div>
+            <h2>Glossary and source map</h2>
+            <p class="section-lede">
+              Stable terms keep design discussions aligned with the code.
+            </p>
+          </div>
+        </div>
+
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">Design glossary</caption>
+            <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><th scope="row"><strong>Program</strong></th><td>The pinned deterministic async function running inside QuickJS.</td></tr>
+              <tr><th scope="row"><strong>Leaf</strong></th><td>One journaled unit of external work: an agent invocation or registered extension call.</td></tr>
+              <tr><th scope="row"><strong>Sequence</strong></th><td>Call identity assigned in VM dispatch order.</td></tr>
+              <tr><th scope="row"><strong>Attempt</strong></th><td>One physical execution of a logical leaf sequence.</td></tr>
+              <tr><th scope="row"><strong>Completion</strong></th><td>Durable leaf outcome delivered to the program promise.</td></tr>
+              <tr><th scope="row"><strong>Effective completion</strong></th><td>The latest non-void completion after applying append-only retry markers.</td></tr>
+              <tr><th scope="row"><strong>Replay</strong></th><td>Re-execution of the frozen program with durable completions delivered in recorded order.</td></tr>
+              <tr><th scope="row"><strong>Fail-forward</strong></th><td>Resume that preserves history and retries only an unambiguous unfinished/terminal frontier.</td></tr>
+              <tr><th scope="row"><strong>Re-orient</strong></th><td>A write attempt that first inspects current external state rather than blindly repeating prior work.</td></tr>
+              <tr><th scope="row"><strong>Harness</strong></th><td>Agent-vendor adapter that turns a LeafRequest into normalized HarnessEvents.</td></tr>
+              <tr><th scope="row"><strong>Executor</strong></th><td>Process and filesystem adapter for the local host or an SSH destination.</td></tr>
+              <tr><th scope="row"><strong>Trace</strong></th><td>Observational attempt detail; useful for humans, not deterministic authority.</td></tr>
+              <tr><th scope="row"><strong>Control epoch</strong></th><td>The portion of the append-only control stream consumed by one supervisor ownership period.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Primary source map</h3>
+        <ul class="source-list">
+          <li><a href="packages/core/src/contracts.ts">packages/core/src/contracts.ts</a><span>Cross-package contracts and policy defaults.</span></li>
+          <li><a href="packages/core/src/engine.ts">packages/core/src/engine.ts</a><span>QuickJS sandbox, promise API, delivery, and step budget.</span></li>
+          <li><a href="packages/core/src/supervisor.ts">packages/core/src/supervisor.ts</a><span>Replay, scheduling, retries, controls, budgets, and lifecycle.</span></li>
+          <li><a href="packages/core/src/rundir.ts">packages/core/src/rundir.ts</a><span>Run artifacts, JSONL recovery, result storage, and advisory ownership.</span></li>
+          <li><a href="packages/core/src/status.ts">packages/core/src/status.ts</a><span>Pure journal-plus-trace status projection.</span></li>
+          <li><a href="packages/core/src/canonical.ts">packages/core/src/canonical.ts</a><span>Strict canonical JSON and digests.</span></li>
+          <li><a href="packages/harness-claude/src/index.ts">packages/harness-claude/src/index.ts</a><span>Claude transports, permissions, and event mapping.</span></li>
+          <li><a href="packages/harness-codex/src/harness.ts">packages/harness-codex/src/harness.ts</a><span>Codex app-server protocol, approvals, sandbox, and sessions.</span></li>
+          <li><a href="packages/executors/src">packages/executors/src</a><span>Local and SSH execution boundaries.</span></li>
+          <li><a href="packages/ops/src/ops.ts">packages/ops/src/ops.ts</a><span>Canonical operation definitions and detached startup.</span></li>
+          <li><a href="packages/ops/src/registry.ts">packages/ops/src/registry.ts</a><span>Built-in and explicit extension assembly.</span></li>
+          <li><a href="packages/cli/src/bin.ts">packages/cli/src/bin.ts</a><span>Exhaustive command-line interpretation of the operation registry.</span></li>
+          <li><a href="packages/mcp/src/index.ts">packages/mcp/src/index.ts</a><span>Exhaustive MCP interpretation and operation mutation hints.</span></li>
+          <li><a href="packages/sdk/src/index.ts">packages/sdk/src/index.ts</a><span>Selected embedded facade and run-watching semantics.</span></li>
+          <li><a href="packages/ui/src">packages/ui/src</a><span>Derived static and live HTML projections.</span></li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <strong>Maintenance rule:</strong> keep the design small, the promises honest, and the executable checks close to the boundary they protect.
+  </footer>
+</body>
+</html>

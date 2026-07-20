@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { prepareRun, superviseRun, type Registry } from "../src/supervisor.js";
 import { readJournal, readResult, runPaths } from "../src/rundir.js";
-import { DivergenceError, type JournalRecord } from "../src/contracts.js";
+import { DEFAULT_POLICY, DivergenceError, type JournalRecord } from "../src/contracts.js";
 import { makeFakeHarness, makeRegistry, mulberry32 } from "./helpers/fake.js";
 
 const FIX = (name: string) => path.join(__dirname, "fixtures", name);
@@ -97,6 +97,34 @@ describe("live execution", () => {
     const result = readResult(runPaths(manifest.runId), status.resultSha!) as Record<string, unknown>;
     expect((result.fetched as Record<string, unknown>).found).toBe(true);
   });
+
+  it("preserves own __proto__ keys across the VM JSON boundary", async () => {
+    const registry = makeRegistry(
+      makeFakeHarness({ result: () => JSON.parse('{"__proto__":{"owned":true},"own":1}') }),
+    );
+    const { manifest, status } = await runProgram("proto-result.orc.ts", registry);
+    expect(status.state).toBe("completed");
+    const result = readResult(runPaths(manifest.runId), status.resultSha!) as {
+      hasOwn: boolean;
+      keys: string[];
+      protoValue: { owned: boolean };
+    };
+    expect(result.hasOwn).toBe(true);
+    expect(result.keys).toContain("__proto__");
+    expect(result.protoValue).toEqual({ owned: true });
+  });
+
+  it("finishes calls that the program schedules without awaiting", async () => {
+    const { manifest, status } = await runProgram(
+      "unawaited.orc.ts",
+      makeRegistry(makeFakeHarness()),
+    );
+    expect(status.state).toBe("completed");
+    expect(status.leaves).toEqual([
+      expect.objectContaining({ id: "unawaited", status: "ok" }),
+    ]);
+    expect(readJournal(manifest.runId).filter((record) => record.t === "done")).toHaveLength(1);
+  });
 });
 
 describe("policy and sandbox", () => {
@@ -135,9 +163,52 @@ describe("policy and sandbox", () => {
     expect(status.state).toBe("failed");
     expect(status.error).toMatch(/step budget/);
   });
+
+  it("applies maxResultBytes to the final aggregate result", async () => {
+    const registry = makeRegistry(makeFakeHarness());
+    const manifest = await prepareRun(launchOpts("large-final.orc.ts"), registry);
+    const status = await superviseRun(manifest.runId, registry, {}, { ...DEFAULT_POLICY, maxResultBytes: 128 });
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/result exceeds cap/);
+  });
+
+  it("rejects a non-JSON final program result instead of stringifying it loosely", async () => {
+    const { status } = await runProgram(
+      "non-json-final.orc.ts",
+      makeRegistry(makeFakeHarness()),
+    );
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/program result is not valid JSON.*cycle/);
+  });
 });
 
 describe("replay identity", () => {
+  it("delivers the same bounded oversized error live and on replay", async () => {
+    const registry = makeRegistry(
+      makeFakeHarness({ failSeqs: [0], failMessage: () => "x".repeat(10_000) }),
+    );
+    const { manifest, status } = await runProgram("oversized-error.orc.ts", registry);
+    expect(status.state).toBe("completed");
+    const liveResult = readResult(runPaths(manifest.runId), status.resultSha!) as {
+      status: string;
+      error: string;
+    };
+    expect(liveResult.status).toBe("error");
+    expect(liveResult.error).toMatch(/^x/);
+    expect(liveResult.error).not.toContain("poisoned");
+
+    const paths = runPaths(manifest.runId);
+    const records = readJournal(manifest.runId).filter((r) => r.t !== "finish");
+    fs.writeFileSync(paths.journal, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const poisoned = makeRegistry(
+      makeFakeHarness({ result: () => {
+        throw new Error("oversized error completion was re-dispatched");
+      } }),
+    );
+    const resumed = await superviseRun(manifest.runId, poisoned);
+    expect(resumed.resultSha).toBe(status.resultSha);
+  });
+
   it("resume of a completed run refuses; crash-mid-run replay reproduces the result", async () => {
     // Live run with fuzzed latencies.
     const rng = mulberry32(7);
@@ -232,6 +303,106 @@ describe("divergence detection (bidirectional)", () => {
 });
 
 describe("fail-forward resume", () => {
+  it("records the causal leaf so a long direct failure remains resumable", async () => {
+    const failing = makeRegistry(
+      makeFakeHarness({ failSeqs: [0], failMessage: () => "x".repeat(10_000) }),
+    );
+    const { manifest, status } = await runProgram("retry.orc.ts", failing);
+    expect(status.state).toBe("failed");
+    expect(readJournal(manifest.runId).filter((record) => record.t === "finish").at(-1)).toMatchObject({
+      errorSeq: 0,
+    });
+
+    const resumed = await superviseRun(manifest.runId, makeRegistry(makeFakeHarness()));
+    expect(resumed.state).toBe("completed");
+  });
+
+  it("preserves causal retry metadata when replay finishes a crashed run", async () => {
+    const failing = makeRegistry(
+      makeFakeHarness({ failSeqs: [0], failMessage: () => "x".repeat(10_000) }),
+    );
+    const { manifest } = await runProgram("retry.orc.ts", failing);
+    const paths = runPaths(manifest.runId);
+    const crashed = readJournal(manifest.runId).filter((record) => record.t !== "finish");
+    fs.writeFileSync(paths.journal, crashed.map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+    const replayed = await superviseRun(
+      manifest.runId,
+      makeRegistry(
+        makeFakeHarness({
+          result: () => {
+            throw new Error("completed leaf was re-dispatched during replay");
+          },
+        }),
+      ),
+    );
+    expect(replayed.state).toBe("failed");
+    expect(readJournal(manifest.runId).filter((record) => record.t === "finish").at(-1)).toMatchObject({
+      errorSeq: 0,
+    });
+
+    const resumed = await superviseRun(manifest.runId, makeRegistry(makeFakeHarness()));
+    expect(resumed.state).toBe("completed");
+  });
+
+  it("retries the causal concurrent leaf even when it is not the highest sequence", async () => {
+    const log = path.join(home, "concurrent-causal.log");
+    const failing = makeRegistry(
+      makeFakeHarness({
+        failSeqs: [0],
+        invocationLog: log,
+        latency: (seq) => (seq === 0 ? 0 : 50),
+      }),
+    );
+    const { manifest, status } = await runProgram("concurrent-causal.orc.ts", failing);
+    expect(status.state).toBe("failed");
+    expect(readJournal(manifest.runId).filter((record) => record.t === "finish").at(-1)).toMatchObject({
+      errorSeq: 0,
+    });
+
+    const resumed = await superviseRun(
+      manifest.runId,
+      makeRegistry(makeFakeHarness({ invocationLog: log })),
+    );
+    expect(resumed.state).toBe("completed");
+    const invocations = fs.readFileSync(log, "utf8").trim().split("\n");
+    expect(invocations.filter((line) => line.startsWith("1:"))).toHaveLength(1);
+  });
+
+  it("refuses to retry a final leaf error that the program consumed", async () => {
+    const log = path.join(home, "consumed-final.log");
+    const registry = makeRegistry(makeFakeHarness({ failSeqs: [0], invocationLog: log }));
+    const { manifest, status } = await runProgram("consumed-final-error.orc.ts", registry);
+    expect(status.state).toBe("failed");
+
+    await expect(superviseRun(manifest.runId, registry)).rejects.toThrow(
+      /no unambiguous terminal leaf failure/,
+    );
+    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(3);
+  });
+
+  it("preserves a consumed error and retries only the terminal frontier", async () => {
+    const log = path.join(home, "consumed.log");
+    const failing = makeRegistry(makeFakeHarness({ failSeqs: [0, 2], invocationLog: log }));
+    const { manifest, status } = await runProgram("consumed-error-resume.orc.ts", failing);
+    expect(status.state).toBe("failed");
+
+    const healthy = makeRegistry(makeFakeHarness({ invocationLog: log }));
+    const resumed = await superviseRun(manifest.runId, healthy);
+    expect(resumed.state).toBe("completed");
+    const result = readResult(runPaths(manifest.runId), resumed.resultSha!) as {
+      caught: { status: string };
+    };
+    expect(result.caught.status).toBe("error");
+
+    const invocations = fs.readFileSync(log, "utf8").trim().split("\n");
+    expect(invocations.filter((line) => line.startsWith("0:"))).toHaveLength(3);
+    expect(invocations.filter((line) => line.startsWith("1:"))).toHaveLength(1);
+    expect(invocations.filter((line) => line.startsWith("2:"))).toHaveLength(4);
+    const retries = readJournal(manifest.runId).filter((r) => r.t === "retry");
+    expect(retries.at(-1)).toMatchObject({ t: "retry", seqs: [2] });
+  });
+
   it("a failed write leaf resumes with a re-orienting attempt (never blind)", async () => {
     const log = path.join(home, "invocations.log");
     // First run: the write leaf (seq 1) fails.

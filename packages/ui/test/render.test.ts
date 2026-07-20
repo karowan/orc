@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { JournalRecord } from "@orc/core/src/contracts.js";
 import { projectStatus } from "@orc/core/src/status.js";
 import { renderLivePage, renderReportHtml } from "../src/index.js";
 import { makeJournal, makeManifest, makeTraces } from "./fixtures.js";
@@ -99,6 +100,20 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(html).not.toContain("lane-block");
     // Header-level summaries stay.
     expect(html).toContain("~$0.13 (incl. est)"); // header cost rollup
+  });
+
+  it("uses durable spend from every retry attempt without double-counting revisions", () => {
+    const { manifest, status, traces } = fixture();
+    const journal: JournalRecord[] = [
+      { t: "cost", seq: 1, attempt: 1, costUsd: 0.1234, costEstimated: false, atMs: 1 },
+      { t: "cost", seq: 1, attempt: 2, costUsd: 0.1, costEstimated: false, atMs: 2 },
+      { t: "cost", seq: 1, attempt: 2, costUsd: 0.25, costEstimated: false, atMs: 3 },
+      { t: "cost", seq: 3, attempt: 1, costUsd: 0.0075, costEstimated: true, atMs: 4 },
+    ];
+    const html = renderReportHtml({ manifest, status, traces, journal, live: true });
+    // attempt 1 ($0.1234) + latest durable attempt 2 cost ($0.25) +
+    // estimated failed leaf ($0.0075) = $0.3809.
+    expect(html).toContain("~$0.38 (incl. est)");
   });
 
   it("surfaces a leaf's full record through the drawer (output, tools, usage)", () => {

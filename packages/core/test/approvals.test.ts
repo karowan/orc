@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { prepareRun, superviseRun, type Registry } from "../src/supervisor.js";
-import { appendControl, readResult, readTraces, runPaths } from "../src/rundir.js";
+import { appendControl, JsonlAppender, readResult, readTraces, runPaths } from "../src/rundir.js";
 import { openApprovals } from "../src/status.js";
 import type { Harness } from "../src/contracts.js";
 import { fakeExecutor } from "./helpers/fake.js";
@@ -48,6 +48,117 @@ async function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
 }
 
 describe("permission bubbling (end to end)", () => {
+  it("honors a cancel queued before the first supervisor starts", async () => {
+    const reg = registry();
+    const manifest = await launch(reg);
+    appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
+
+    expect((await superviseRun(manifest.runId, reg)).state).toBe("cancelled");
+    expect(readTraces(manifest.runId).filter((record) => record.t === "leaf")).toHaveLength(0);
+  });
+
+  it("honors a cancel queued after an unfinished supervisor crash", async () => {
+    const reg = registry();
+    const manifest = await launch(reg);
+    const journal = new JsonlAppender(runPaths(manifest.runId).journal);
+    journal.append({ t: "attempt", seq: 0, attempt: 1, atMs: Date.now() });
+    journal.close();
+    appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
+
+    expect((await superviseRun(manifest.runId, reg)).state).toBe("cancelled");
+    expect(readTraces(manifest.runId).filter((record) => record.t === "leaf")).toHaveLength(0);
+  });
+
+  it("does not replay controls from a cancelled supervisor when the run resumes", async () => {
+    const reg = registry();
+    const manifest = await launch(reg);
+
+    const firstRun = superviseRun(manifest.runId, reg);
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length > 0);
+    const oldApproval = openApprovals(readTraces(manifest.runId))[0];
+    appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
+    expect((await firstRun).state).toBe("cancelled");
+
+    const resumedRun = superviseRun(manifest.runId, reg);
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length > 0);
+    const pending = openApprovals(readTraces(manifest.runId))[0];
+    expect(pending.id).not.toBe(oldApproval.id);
+    appendControl(manifest.runId, {
+      t: "approval",
+      approvalId: pending.id,
+      decision: { behavior: "allow" },
+      by: "test",
+      atMs: Date.now(),
+    });
+
+    expect((await resumedRun).state).toBe("completed");
+  });
+
+  it("keeps the control epoch after a resumed run crashes", async () => {
+    const reg = registry();
+    const manifest = await launch(reg);
+    const firstRun = superviseRun(manifest.runId, reg);
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length > 0);
+    appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
+    expect((await firstRun).state).toBe("cancelled");
+
+    // A resume durably re-armed the run, then crashed before dispatch.
+    const journal = new JsonlAppender(runPaths(manifest.runId).journal);
+    journal.append({ t: "retry", seqs: [], atMs: Date.now() });
+    journal.close();
+
+    const resumedRun = superviseRun(manifest.runId, reg);
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length > 0);
+    const pending = openApprovals(readTraces(manifest.runId))[0];
+    appendControl(manifest.runId, {
+      t: "approval",
+      approvalId: pending.id,
+      decision: { behavior: "allow" },
+      by: "test",
+      atMs: Date.now(),
+    });
+    expect((await resumedRun).state).toBe("completed");
+  });
+
+  it("expires an approval abandoned by a crashed supervisor before asking again", async () => {
+    const reg = registry();
+    const manifest = await launch(reg);
+    const abandonedId = "a_abandoned";
+    const traces = new JsonlAppender(runPaths(manifest.runId).traces);
+    traces.append({
+      t: "event",
+      atMs: Date.now(),
+      event: {
+        kind: "approval-requested",
+        approval: {
+          id: abandonedId,
+          runId: manifest.runId,
+          seq: 0,
+          toolName: "Bash",
+          input: { command: "rm -rf x" },
+          requestedAtMs: Date.now(),
+        },
+      },
+    });
+    traces.close();
+
+    const resumedRun = superviseRun(manifest.runId, reg);
+    await waitFor(() => {
+      const pending = openApprovals(readTraces(manifest.runId));
+      return pending.length === 1 && pending[0].id !== abandonedId;
+    });
+    const pending = openApprovals(readTraces(manifest.runId));
+    expect(pending).toHaveLength(1);
+    appendControl(manifest.runId, {
+      t: "approval",
+      approvalId: pending[0].id,
+      decision: { behavior: "allow" },
+      by: "test",
+      atMs: Date.now(),
+    });
+    expect((await resumedRun).state).toBe("completed");
+  });
+
   it("bubbles an approval, blocks the leaf, and resolves it on an allow", async () => {
     const reg = registry();
     const manifest = await launch(reg);
@@ -151,5 +262,8 @@ describe("permission bubbling (end to end)", () => {
     appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
     const status = await runPromise;
     expect(status.state).toBe("cancelled");
+    expect(status.running).toBe(0);
+    expect(status.leaves.some((leaf) => leaf.status === "running")).toBe(false);
+    expect(openApprovals(readTraces(manifest.runId))).toHaveLength(0);
   });
 });

@@ -10,6 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type {
   Executor,
+  ExtensionLeaf,
   Harness,
   HarnessCapabilities,
   Registry,
@@ -142,5 +143,136 @@ describe("validate --check-capabilities (per-model reasoning efforts)", () => {
     );
     expect(res.problems).toEqual([]);
     expect(res.ok).toBe(true);
+  });
+
+  it("reports capability discovery failures instead of silently skipping them", async () => {
+    const broken: Harness = {
+      ...fakeHarness,
+      name: "broken",
+      async discover() {
+        throw new Error("probe exploded");
+      },
+    };
+    const res = await validate.handler(
+      {
+        programPath: programFor(`{ harness: "broken" }`),
+        allowWrites: false,
+        checkCapabilities: true,
+      },
+      {
+        registry: {
+          ...registry,
+          harnesses: new Map([[broken.name, broken]]),
+          defaultHarness: broken.name,
+        },
+      },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.problems.join("\n")).toContain('could not discover harness "broken"');
+    expect(res.problems.join("\n")).toContain("probe exploded");
+  });
+
+  it("rejects schemas when live capabilities lack structured output", async () => {
+    const plain: Harness = {
+      ...fakeHarness,
+      name: "plain",
+      async discover() {
+        return { ...(await fakeHarness.discover({ executor: executorFor(undefined) })), structuredOutput: false };
+      },
+    };
+    const res = await validate.handler(
+      {
+        programPath: programFor(`{ harness: "plain", schema: { type: "string" } }`),
+        allowWrites: false,
+        checkCapabilities: true,
+      },
+      {
+        registry: {
+          ...registry,
+          harnesses: new Map([[plain.name, plain]]),
+          defaultHarness: plain.name,
+        },
+      },
+    );
+    expect(res.problems.join("\n")).toContain('harness "plain" does not support structured output');
+  });
+
+  it("probes the per-call host rather than the validate-wide host", async () => {
+    const hosts: Array<string | undefined> = [];
+    const res = await validate.handler(
+      {
+        programPath: programFor(`{ harness: "fake", host: "leaf@box" }`),
+        allowWrites: false,
+        host: "default@box",
+        checkCapabilities: true,
+      },
+      {
+        registry: {
+          ...registry,
+          executorFor(host) {
+            hosts.push(host);
+            return executorFor(undefined);
+          },
+        },
+      },
+    );
+    expect(res.ok).toBe(true);
+    expect(hosts).toEqual(["leaf@box"]);
+    expect(res.firstCalls[0]?.host).toBe("leaf@box");
+  });
+
+  it("uses launch-equivalent default harness and approval mode", async () => {
+    const manualOnly: Harness = {
+      ...fakeHarness,
+      name: "manual-only",
+      async discover() {
+        return {
+          ...(await fakeHarness.discover({ executor: executorFor(undefined) })),
+          approvalModes: ["manual"],
+        };
+      },
+    };
+    const res = await validate.handler(
+      {
+        programPath: programFor(`{}`),
+        allowWrites: false,
+        harness: manualOnly.name,
+        checkCapabilities: true,
+      },
+      {
+        registry: {
+          ...registry,
+          harnesses: new Map([
+            [fakeHarness.name, fakeHarness],
+            [manualOnly.name, manualOnly],
+          ]),
+        },
+      },
+    );
+    expect(res.problems.join("\n")).toContain('harness "manual-only" cannot honor approval mode "auto"');
+  });
+
+  it("uses registered extension readOnly metadata for the write gate", async () => {
+    const extension: ExtensionLeaf = {
+      name: "writer",
+      readOnly: false,
+      async execute() {
+        return null;
+      },
+    };
+    const program = path.join(dir, "extension.orc.ts");
+    fs.writeFileSync(program, `export default async ({ ext }: any) => ext.writer({ value: 1 });\n`);
+    const res = await validate.handler(
+      { programPath: program, allowWrites: false, checkCapabilities: false },
+      {
+        registry: {
+          ...registry,
+          extensions: new Map([[extension.name, extension]]),
+        },
+      },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.firstCalls[0]?.readOnly).toBe(false);
+    expect(res.problems.join("\n")).toContain("allowWrites was not granted");
   });
 });

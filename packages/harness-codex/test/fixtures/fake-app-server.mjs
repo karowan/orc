@@ -11,10 +11,13 @@
  *
  * Scenarios:
  *   happy         command item + structured agent message + usage + completed
+ *   optional-null strict-schema null placeholders in nested optional fields
  *   approval      server requests item/commandExecution/requestApproval
  *   legacy-approval  server requests execCommandApproval (old family)
+ *   legacy-edit   server requests applyPatchApproval (old family)
  *   edit-in-cwd   fileChange approval whose paths live under the thread cwd
  *   edit-out-cwd  fileChange approval with a path outside the thread cwd
+ *   edit-dotdot   fileChange approval with a lexical parent segment
  *   idle          responds to turn/start, then goes silent forever
  *   cancel        one delta, then waits for turn/interrupt
  *   discover      only initialize + model/list (for discover() tests)
@@ -102,6 +105,20 @@ async function driveTurn() {
       turnCompleted("completed");
       break;
     }
+    case "optional-null":
+      agentMessage(
+        JSON.stringify({
+          name: "ok",
+          nickname: null,
+          nullable: null,
+          nested: { note: null },
+          rows: [{ tag: null }],
+          choice: { note: null },
+          variant: { label: null },
+        }),
+      );
+      turnCompleted("completed");
+      break;
     case "approval": {
       const cmd = item("commandExecution", "exec-1", {
         command: "/bin/zsh -lc 'touch marker.txt'",
@@ -140,10 +157,26 @@ async function driveTurn() {
       turnCompleted("completed");
       break;
     }
+    case "legacy-edit": {
+      const resp = await serverRequest("applyPatchApproval", {
+        conversationId: THREAD_ID,
+        callId: "call-1",
+        fileChanges: { [`${threadCwd}/notes/file.txt`]: { type: "add" } },
+      });
+      record({ note: "approval-response", response: resp });
+      agentMessage(resp?.decision === "approved" ? "edited" : "was denied");
+      turnCompleted("completed");
+      break;
+    }
     case "edit-in-cwd":
-    case "edit-out-cwd": {
+    case "edit-out-cwd":
+    case "edit-dotdot": {
       const path =
-        scenario === "edit-in-cwd" ? `${threadCwd}/notes/file.txt` : "/absolutely/elsewhere/file.txt";
+        scenario === "edit-in-cwd"
+          ? `${threadCwd}/notes/file.txt`
+          : scenario === "edit-dotdot"
+            ? `${threadCwd}/../outside/file.txt`
+            : "/absolutely/elsewhere/file.txt";
       const fc = item("fileChange", "patch-1", {
         status: "inProgress",
         changes: [{ path, kind: "add" }],

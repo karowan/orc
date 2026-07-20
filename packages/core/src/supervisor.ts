@@ -6,6 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import {
   DEFAULT_POLICY,
   DivergenceError,
@@ -48,7 +49,9 @@ import {
   writeResult,
   type RunPaths,
 } from "./rundir.js";
-import { latestLeafTraces, projectStatus, statusForRun } from "./status.js";
+import { openApprovals, projectStatus, statusForRun } from "./status.js";
+
+const READ_ONLY_SHUTDOWN_GRACE_MS = 1_000;
 
 export interface Registry {
   harnesses: Map<string, Harness>;
@@ -68,7 +71,7 @@ export interface LaunchOptions {
   sandboxDirs?: string[];
   maxParallel?: number;
   idleTimeout?: number | false; // ms
-  budgetUsd?: number; // USD cap; the run is cancelled once estimated cost exceeds it
+  budgetUsd?: number; // reactive USD cap; the run fails once observed cost exceeds it
   name?: string;
   defaultHarness?: string;
 }
@@ -149,26 +152,35 @@ export async function superviseRun(
 ): Promise<RunStatus> {
   const manifest = readManifest(runId);
   const paths = runPaths(runId);
-  const lock = acquireLock(paths);
-  const journalOut = new JsonlAppender<JournalRecord>(paths.journal);
-  const traceOut = new JsonlAppender<TraceRecord>(paths.traces);
-  const sup = new Supervisor(manifest, paths, registry, hooks, policy, journalOut, traceOut);
-  // Watch control.jsonl so approval responses / cancels are picked up within
-  // milliseconds instead of on the next poll tick — responsive UI approvals.
-  fs.closeSync(fs.openSync(paths.control, "a")); // touch: create if absent, never modify
+  const lock = await acquireLock(paths);
+  let journalOut: JsonlAppender<JournalRecord> | undefined;
+  let traceOut: JsonlAppender<TraceRecord> | undefined;
   let controlWatcher: fs.FSWatcher | undefined;
   try {
-    controlWatcher = fs.watch(paths.control, () => sup.wakeForControl());
-  } catch {
-    /* fs.watch unsupported here; the 1s poll still covers it */
-  }
-  try {
-    return await sup.run();
+    journalOut = new JsonlAppender<JournalRecord>(paths.journal);
+    traceOut = new JsonlAppender<TraceRecord>(paths.traces);
+    const sup = new Supervisor(manifest, paths, registry, hooks, policy, journalOut, traceOut);
+    // Watch control.jsonl so approval responses / cancels are picked up within
+    // milliseconds instead of on the next poll tick — responsive UI approvals.
+    fs.closeSync(fs.openSync(paths.control, "a")); // touch: create if absent, never modify
+    try {
+      controlWatcher = fs.watch(paths.control, () => sup.wakeForControl());
+    } catch {
+      /* fs.watch unsupported here; the 1s poll still covers it */
+    }
+    let ownershipError: Error | undefined;
+    void lock.lost.catch((err: unknown) => {
+      ownershipError = err instanceof Error ? err : new Error(String(err));
+      sup.loseOwnership(ownershipError);
+    });
+    const status = await sup.run();
+    if (ownershipError) throw ownershipError;
+    return status;
   } finally {
     controlWatcher?.close();
-    journalOut.close();
-    traceOut.close();
-    lock.release();
+    journalOut?.close();
+    traceOut?.close();
+    await lock.release();
     hooks.onUpdate?.(runId);
   }
 }
@@ -184,12 +196,15 @@ class Supervisor {
   private completionSignal: (() => void) | null = null;
   private attemptBySeq = new Map<number, number>();
   private pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
-  private approvalCounter = 0;
   private controlConsumed = 0;
   private cancelled = false;
   private terminalError: string | null = null;
-  /** Latest known cost per leaf seq (exact or rate-estimated), for the budget cap. */
-  private costBySeq = new Map<number, number>();
+  private terminalErrorSeq: number | undefined;
+  /** Latest cumulative cost for each durable leaf attempt. */
+  private costByAttempt = new Map<string, number>();
+  private leafTasks = new Set<Promise<void>>();
+  private writeLeafTasks = new Set<Promise<void>>();
+  private stopping = false;
   private replayCallCursor = 0; // verified against callRecords during replay
   private phaseNames: string[] = [];
 
@@ -206,16 +221,46 @@ class Supervisor {
   async run(): Promise<RunStatus> {
     const journal = readJournal(this.manifest.runId);
     const alreadyFinished = lastFinish(journal);
+    let latestFinish: Extract<JournalRecord, { t: "finish" }> | undefined;
+    for (const record of journal) {
+      if (record.t === "finish") latestFinish = record;
+    }
+    const controls = readControl(this.manifest.runId);
+    // A finish durably records the old control epoch. This also survives a
+    // resume that wrote its retry marker and then crashed.
+    this.controlConsumed =
+      latestFinish?.controlOffset === undefined
+        ? alreadyFinished
+          ? controls.length // legacy finish record
+          : 0
+        : Math.min(latestFinish.controlOffset, controls.length);
     const bundle = fs.readFileSync(this.paths.program, "utf8");
     if (sha256Hex(bundle) !== this.manifest.programSha256) {
       throw new DivergenceError("program bundle does not match manifest hash", {});
     }
 
-    // Seed the budget tracker with cost already spent by prior attempts, so a
-    // resume enforces the cap against the run's TOTAL cost, not just new work.
+    // Attempt starts and spend are durable so crashes cannot reset retry
+    // allowance or make prior attempts free. Completion records preserve
+    // compatibility with runs created before attempt-start records existed.
+    for (const rec of journal) {
+      if (rec.t === "attempt" || rec.t === "done") {
+        this.attemptBySeq.set(rec.seq, Math.max(this.attemptBySeq.get(rec.seq) ?? 0, rec.attempt));
+      } else if (rec.t === "cost") {
+        this.costByAttempt.set(attemptKey(rec.seq, rec.attempt), rec.costUsd);
+      }
+    }
+    // Old runs recorded cost only in traces. Recover the latest revision for
+    // each attempt, but never override a durable cost record.
     if (this.manifest.budgetUsd !== undefined) {
-      for (const [seq, tr] of latestLeafTraces(readTraces(this.manifest.runId))) {
-        if (tr.costUsd !== undefined) this.costBySeq.set(seq, tr.costUsd);
+      const legacyCosts = new Map<string, { rev: number; cost: number }>();
+      for (const tr of readTraces(this.manifest.runId)) {
+        if (tr.t !== "leaf" || tr.costUsd === undefined) continue;
+        const key = attemptKey(tr.seq, tr.attempt);
+        const current = legacyCosts.get(key);
+        if (!current || tr.rev >= current.rev) legacyCosts.set(key, { rev: tr.rev, cost: tr.costUsd });
+      }
+      for (const [key, value] of legacyCosts) {
+        if (!this.costByAttempt.has(key)) this.costByAttempt.set(key, value.cost);
       }
       this.checkBudget();
     }
@@ -225,24 +270,55 @@ class Supervisor {
     this.callRecords = [...priorCalls];
     const effective = effectiveCompletions(journal);
     let retrySeqs: number[] = [];
+    let persistRetry = false;
     if (alreadyFinished && alreadyFinished.status !== "completed") {
-      // Re-arm every errored/undelivered call site; void their old completions.
-      retrySeqs = priorCalls
-        .map((c) => c.seq)
-        .filter((seq) => effective.get(seq)?.record.status !== "ok");
-      for (const seq of retrySeqs) effective.delete(seq);
-      if (retrySeqs.length > 0 || alreadyFinished.status === "cancelled") {
-        this.journalOut.append({ t: "retry", seqs: retrySeqs, atMs: Date.now() });
+      if (alreadyFinished.status === "failed") {
+        // A failure followed by another call was observed and handled by the
+        // program; rewriting it would rewrite history. The only safe automatic
+        // retry is the exact leaf recorded as the terminal cause. Call sequence
+        // is dispatch order, so a concurrent causal failure need not be the
+        // highest sequence number.
+        if (
+          alreadyFinished.errorSeq !== undefined &&
+          effective.get(alreadyFinished.errorSeq)?.record.status === "error"
+        ) {
+          retrySeqs = [alreadyFinished.errorSeq];
+        } else if (alreadyFinished.errorSeq === undefined) {
+          // Legacy finishes lack causal metadata. Keep their conservative
+          // final-call string check rather than guessing across concurrency.
+          const finalSeq = priorCalls.at(-1)?.seq;
+          const finalCompletion = finalSeq === undefined ? undefined : effective.get(finalSeq)?.record;
+          if (
+            finalSeq !== undefined &&
+            finalCompletion?.status === "error" &&
+            finalCompletion.error !== undefined &&
+            (alreadyFinished.error === finalCompletion.error ||
+              alreadyFinished.error?.startsWith(`${finalCompletion.error}\n`))
+          ) {
+            retrySeqs = [finalSeq];
+          }
+        }
+        if (retrySeqs.length === 0) {
+          throw new Error(
+            `run ${this.manifest.runId} has no unambiguous terminal leaf failure to retry; launch a new run`,
+          );
+        }
       }
+      for (const seq of retrySeqs) effective.delete(seq);
+      persistRetry = true;
     } else if (alreadyFinished?.status === "completed") {
       throw new Error(`run ${this.manifest.runId} already completed`);
     }
-    // Attempt numbering scans ALL completion records (including voided ones)
-    // so a re-orient attempt journals as attempt N+1, never a repeat.
-    for (const rec of journal) {
-      if (rec.t === "done") {
-        this.attemptBySeq.set(rec.seq, Math.max(this.attemptBySeq.get(rec.seq) ?? 0, rec.attempt));
-      }
+
+    // A hard-killed owner cannot resolve approvals in its finally path. Close
+    // those historical requests before a resumed attempt can ask again.
+    for (const approval of openApprovals(readTraces(this.manifest.runId))) {
+      this.traceEvent({
+        kind: "approval-resolved",
+        approvalId: approval.id,
+        decision: { behavior: "deny", message: "approval expired when the supervisor restarted" },
+        by: "supervisor",
+      });
     }
 
     const replaying = priorCalls.length > 0;
@@ -260,7 +336,7 @@ class Supervisor {
           },
         },
       );
-      return await this.execute(effective, retrySeqs);
+      return await this.execute(effective, retrySeqs, persistRetry);
     } catch (err) {
       // Policy violations (write gate, caps, step budget) are TERMINAL RUN
       // OUTCOMES, not supervisor crashes. Divergence stays a loud throw.
@@ -270,14 +346,21 @@ class Supervisor {
       }
       throw err;
     } finally {
-      this.abortAll("run ended");
+      await this.stopAll("run ended");
       this.vm?.dispose();
     }
+  }
+
+  loseOwnership(error: Error): void {
+    this.terminalError = `supervisor ownership lost: ${error.message}`;
+    this.abortAll(this.terminalError);
+    this.signal();
   }
 
   private async execute(
     effective: Map<number, { record: CompletionRecord; index: number }>,
     retrySeqs: number[],
+    persistRetry: boolean,
   ): Promise<RunStatus> {
     {
       // ---- replay: deliver effective completions in journal order ----------
@@ -290,7 +373,7 @@ class Supervisor {
             { seq: record.seq },
           );
         }
-        this.vm.deliver(record.seq, this.materializeOutcome(record));
+        this.deliver(record.seq, this.materializeOutcome(record));
       }
       this.checkNewCallsAgainstJournal();
       // Unconsumed suffix check: every prior call must have been re-made.
@@ -304,6 +387,12 @@ class Supervisor {
             {},
           );
         }
+      }
+
+      // Persist only after the candidate history replayed cleanly. A failed
+      // resume must not mutate the journal into a permanently re-armed state.
+      if (persistRetry) {
+        this.journalOut.append({ t: "retry", seqs: retrySeqs, atMs: Date.now() });
       }
 
       // ---- re-dispatch undelivered calls (re-orient for writes) ------------
@@ -372,7 +461,7 @@ class Supervisor {
           if (payloadBytes > this.policy.maxPromptBytes) {
             throw new PolicyError(`ext.${name} payload for call ${seq} exceeds ${this.policy.maxPromptBytes} bytes`);
           }
-          if (ext.inputSchema) {
+          if (ext.inputSchema !== undefined) {
             const problem = validateAgainstSchema(spec.payload ?? null, ext.inputSchema as Json);
             if (problem) throw new PolicyError(`ext.${name} payload for call ${seq} fails inputSchema: ${problem}`);
           }
@@ -410,24 +499,36 @@ class Supervisor {
   // -------------------------------------------------------------------------
   private async liveLoop(): Promise<void> {
     for (;;) {
+      this.pollControl();
       this.checkNewCallsAgainstJournal();
-      this.pumpDispatch();
-
-      const state = this.vm.state();
-      if (state.state !== "pending" && this.inflight.size === 0 && this.completed.length === 0) {
-        this.finish(state);
-        return;
-      }
       if (this.terminalError) {
         this.finishFailed(this.terminalError);
         return;
       }
       if (this.cancelled) {
         this.abortAll("cancelled");
-        this.journalOut.append({ t: "finish", status: "cancelled", error: "cancelled by operator" });
+        this.journalOut.append({
+          t: "finish",
+          status: "cancelled",
+          error: "cancelled by operator",
+          controlOffset: this.controlConsumed,
+        });
         this.hooks.onUpdate?.(this.manifest.runId);
         return;
       }
+
+      const state = this.vm.state();
+      if (
+        state.state !== "pending" &&
+        this.inflight.size === 0 &&
+        this.dispatchQueue.length === 0 &&
+        this.completed.length === 0
+      ) {
+        this.finish(state);
+        return;
+      }
+
+      this.pumpDispatch();
       if (
         state.state === "pending" &&
         this.inflight.size === 0 &&
@@ -447,7 +548,6 @@ class Supervisor {
       }
 
       await this.waitForSignal(1_000);
-      this.pollControl();
       this.checkIdleTimeouts();
     }
   }
@@ -459,6 +559,7 @@ class Supervisor {
       if (!spec) continue;
       const attempt = (this.attemptBySeq.get(seq) ?? 0) + 1;
       this.attemptBySeq.set(seq, attempt);
+      this.journalOut.append({ t: "attempt", seq, attempt, atMs: Date.now() });
       const leaf: InflightLeaf = {
         seq,
         attempt,
@@ -469,21 +570,27 @@ class Supervisor {
         groupId: spec.groupId,
       };
       this.inflight.set(seq, leaf);
-      void this.executeLeaf(leaf)
+      let task!: Promise<void>;
+      task = this.executeLeaf(leaf)
         .then((outcome) => this.onLeafDone(leaf, outcome))
         .catch((err: unknown) =>
           this.onLeafDone(leaf, {
             status: "error",
             error: boundString(String(err instanceof Error ? err.stack ?? err.message : err), this.policy.maxErrorBytes),
           }),
-        );
+        )
+        .finally(() => {
+          this.leafTasks.delete(task);
+          this.writeLeafTasks.delete(task);
+          this.signal();
+        });
+      this.leafTasks.add(task);
+      if (!spec.readOnly) this.writeLeafTasks.add(task);
     }
   }
 
-  private liveRetries = new Map<number, number>();
-
   private onLeafDone(leaf: InflightLeaf, outcome: LeafOutcome["outcome"]): void {
-    if (!this.inflight.has(leaf.seq)) return; // already aborted+settled
+    if (this.stopping || !this.inflight.has(leaf.seq)) return; // already aborted+settled
     this.inflight.delete(leaf.seq);
 
     // Supervisor retry table: a failed READ-ONLY leaf gets a bounded number of
@@ -495,10 +602,12 @@ class Supervisor {
       leaf.spec.readOnly &&
       !leaf.abort.signal.aborted &&
       isRetryable(outcome.error) &&
-      (this.liveRetries.get(leaf.seq) ?? 0) < this.policy.readOnlyRetries
+      leaf.attempt <= this.policy.readOnlyRetries
     ) {
-      this.liveRetries.set(leaf.seq, (this.liveRetries.get(leaf.seq) ?? 0) + 1);
-      this.traceEvent({ kind: "log", message: `leaf ${leaf.seq} failed (read-only) → retry ${this.liveRetries.get(leaf.seq)}/${this.policy.readOnlyRetries}` });
+      this.traceEvent({
+        kind: "log",
+        message: `leaf ${leaf.seq} failed (read-only) → retry ${leaf.attempt}/${this.policy.readOnlyRetries}`,
+      });
       this.dispatchQueue.push(leaf.seq); // re-dispatch with a fresh attempt
       this.signal();
       return;
@@ -529,25 +638,58 @@ class Supervisor {
         t: "done",
         seq: done.seq,
         status: "error",
-        error: boundString(outcome.error, this.policy.maxErrorBytes),
+        // LeafOutcome errors are bounded exactly once at their source. Reusing
+        // the same string here keeps live and replay identity identical.
+        error: outcome.error,
         attempt: done.attempt,
       };
     }
     // WAL invariant: fsync the completion BEFORE delivering it into the sandbox.
     this.journalOut.append(rec, { fsync: true });
-    this.vm.deliver(done.seq, outcome);
+    this.deliver(done.seq, outcome);
     this.hooks.onUpdate?.(this.manifest.runId);
+  }
+
+  /** Deliver identically during replay and live execution, including causality. */
+  private deliver(
+    seq: number,
+    outcome: { status: "ok"; value: Json } | { status: "error"; error: string },
+  ): void {
+    const before = this.vm.state();
+    this.vm.deliver(seq, outcome);
+    if (before.state === "pending" && outcome.status === "error") {
+      const after = this.vm.state();
+      if (
+        after.state === "error" &&
+        (after.error === outcome.error || after.error.startsWith(`${outcome.error}\n`))
+      ) {
+        this.terminalErrorSeq = seq;
+      }
+    }
   }
 
   private finish(state: ReturnType<ProgramVM["state"]>): void {
     if (state.state === "ok") {
-      const { sha } = writeResult(this.paths, state.result ?? null);
-      this.journalOut.append({ t: "finish", status: "completed", resultSha: sha });
+      let result: Json;
+      try {
+        result = this.validateResult(state.result ?? null);
+      } catch (err) {
+        throw new PolicyError(String(err instanceof Error ? err.message : err));
+      }
+      const { sha } = writeResult(this.paths, result);
+      this.journalOut.append({
+        t: "finish",
+        status: "completed",
+        resultSha: sha,
+        controlOffset: this.controlConsumed,
+      });
     } else if (state.state === "error") {
       this.journalOut.append({
         t: "finish",
         status: "failed",
         error: boundString(state.error ?? "program failed", this.policy.maxErrorBytes),
+        errorSeq: this.terminalErrorSeq,
+        controlOffset: this.controlConsumed,
       });
     }
     this.hooks.onUpdate?.(this.manifest.runId);
@@ -555,12 +697,41 @@ class Supervisor {
 
   private finishFailed(error: string): void {
     this.abortAll(error);
-    this.journalOut.append({ t: "finish", status: "failed", error: boundString(error, this.policy.maxErrorBytes) });
+    this.journalOut.append({
+      t: "finish",
+      status: "failed",
+      error: boundString(error, this.policy.maxErrorBytes),
+      controlOffset: this.controlConsumed,
+    });
     this.hooks.onUpdate?.(this.manifest.runId);
   }
 
   private abortAll(reason: string): void {
     for (const leaf of this.inflight.values()) leaf.abort.abort(new Error(reason));
+  }
+
+  private async stopAll(reason: string): Promise<void> {
+    this.stopping = true;
+    this.abortAll(reason);
+    const tasks = [...this.leafTasks];
+    if (tasks.length === 0) return;
+    const writeTasks = new Set(this.writeLeafTasks);
+    const readTasks = tasks.filter((task) => !writeTasks.has(task));
+    // Write tasks retain exclusive ownership until each one actually stops;
+    // a stuck read-only sibling must not extend that requirement.
+    await Promise.allSettled(writeTasks);
+    if (readTasks.length === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(readTasks),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, READ_ONLY_SHUTDOWN_GRACE_MS);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -597,6 +768,7 @@ class Supervisor {
       reoriented: this.reorientSeqs.has(seq) || undefined,
     };
     const emitTrace = (status: LeafTraceRecord["status"], extra: Partial<LeafTraceRecord> = {}, fsync = false) => {
+      if (this.stopping) return;
       this.traceOut.append(
         {
           ...base,
@@ -632,7 +804,7 @@ class Supervisor {
         const name = spec.kind.slice(4);
         const ext = this.registry.extensions.get(name);
         if (!ext) throw new Error(`unknown extension leaf: ext.${name} (register it in orc.config)`);
-        const value = (await ext.execute(spec.payload ?? null, ctx)) ?? null;
+        const value = this.validateResult((await ext.execute(spec.payload ?? null, ctx)) ?? null);
         emitTrace("ok", { endMs: Date.now(), output: value }, true);
         return { status: "ok", value };
       }
@@ -672,14 +844,30 @@ class Supervisor {
       let result: Json | undefined;
       let errorMsg: string | undefined;
       for await (const ev of harness.invoke(req, ctx)) {
+        if (this.stopping) throw new Error(`aborted: ${String(leaf.abort.signal.reason ?? "run ended")}`);
+        assertHarnessEvent(ev);
         leaf.lastEventAtMs = Date.now();
         this.applyEvent(ev, toolCalls, (u) => {
           tokensIn = u.tokensIn ?? tokensIn;
           tokensOut = u.tokensOut ?? tokensOut;
           if (u.costUsd !== undefined) {
+            if (!Number.isFinite(u.costUsd) || u.costUsd < 0) {
+              throw new Error(`harness reported invalid costUsd: ${String(u.costUsd)}`);
+            }
+            const changed = u.costUsd !== costUsd;
             costUsd = u.costUsd;
             costEstimated = u.costEstimated ?? false;
-            this.costBySeq.set(seq, u.costUsd);
+            this.costByAttempt.set(attemptKey(seq, attempt), u.costUsd);
+            if (changed) {
+              this.journalOut.append({
+                t: "cost",
+                seq,
+                attempt,
+                costUsd: u.costUsd,
+                costEstimated,
+                atMs: Date.now(),
+              });
+            }
             this.checkBudget();
           }
         });
@@ -700,6 +888,7 @@ class Supervisor {
       }
       if (errorMsg !== undefined && result === undefined) throw new Error(errorMsg);
       if (result === undefined) throw new Error("harness produced no result event");
+      result = this.validateResult(result, spec.schema);
       emitTrace("ok", { endMs: Date.now(), output: result }, true);
       return { status: "ok", value: result };
     } catch (err) {
@@ -707,6 +896,25 @@ class Supervisor {
       emitTrace("error", { endMs: Date.now(), error: msg }, true);
       return { status: "error", error: msg };
     }
+  }
+
+  private validateResult(value: Json, schema?: Json): Json {
+    let canonical: string;
+    try {
+      canonical = canonicalJson(value);
+    } catch (err) {
+      throw new Error(`result is not valid JSON: ${String(err instanceof Error ? err.message : err)}`);
+    }
+    const size = Buffer.byteLength(canonical);
+    if (size > this.policy.maxResultBytes) {
+      throw new Error(`result exceeds cap (${size} > ${this.policy.maxResultBytes} bytes)`);
+    }
+    const snapshot = JSON.parse(canonical) as Json;
+    if (schema !== undefined) {
+      const problem = validateAgainstSchema(snapshot, schema);
+      if (problem) throw new Error(`result fails output schema: ${problem}`);
+    }
+    return snapshot;
   }
 
   private applyEvent(
@@ -751,7 +959,10 @@ class Supervisor {
     req: Omit<ApprovalRequest, "id" | "requestedAtMs">,
     leaf: InflightLeaf,
   ): Promise<ApprovalDecision> {
-    const id = `a_${leaf.seq}_${this.approvalCounter++}`;
+    if (this.stopping || leaf.abort.signal.aborted) {
+      return Promise.resolve({ behavior: "deny", message: "leaf is no longer running" });
+    }
+    const id = `a_${leaf.seq}_${randomUUID()}`;
     const approval: ApprovalRequest = { ...req, id, requestedAtMs: Date.now() };
     this.traceEvent({ kind: "approval-requested", approval });
     return new Promise<ApprovalDecision>((resolve) => {
@@ -760,9 +971,12 @@ class Supervisor {
         resolve(d);
       };
       this.pendingApprovals.set(id, settle);
-      leaf.abort.signal.addEventListener("abort", () =>
-        settle({ behavior: "deny", message: "leaf aborted while approval was pending" }),
-      );
+      leaf.abort.signal.addEventListener("abort", () => {
+        if (this.pendingApprovals.get(id) !== settle) return;
+        const decision = { behavior: "deny", message: "leaf aborted while approval was pending" } as const;
+        this.traceEvent({ kind: "approval-resolved", approvalId: id, decision, by: "supervisor" });
+        settle(decision);
+      });
     });
   }
 
@@ -796,7 +1010,11 @@ class Supervisor {
     const now = Date.now();
     for (const leaf of this.inflight.values()) {
       if (typeof leaf.idleTimeoutMs === "number" && now - leaf.lastEventAtMs > leaf.idleTimeoutMs) {
-        leaf.abort.abort(new Error(`idle timeout: no harness events for ${leaf.idleTimeoutMs}ms`));
+        const error = `idle timeout: no harness events for ${leaf.idleTimeoutMs}ms`;
+        leaf.abort.abort(new Error(error));
+        // AbortSignal is cooperative. Settle the deterministic leaf outcome
+        // now; a late task result is ignored because the inflight entry is gone.
+        this.onLeafDone(leaf, { status: "error", error });
       }
     }
   }
@@ -807,6 +1025,7 @@ class Supervisor {
   }
 
   private harnessLog(seq: number, message: string): void {
+    if (this.stopping) return;
     this.traceOut.append({ t: "hlog", seq, atMs: Date.now(), message }, { fsync: false });
     this.hooks.onUpdate?.(this.manifest.runId);
   }
@@ -820,10 +1039,10 @@ class Supervisor {
     const budget = this.manifest.budgetUsd;
     if (budget === undefined || this.terminalError) return;
     let total = 0;
-    for (const v of this.costBySeq.values()) total += v;
+    for (const v of this.costByAttempt.values()) total += v;
     if (total > budget) {
       const msg = `budget exceeded: estimated cost ~$${total.toFixed(2)} passed the $${budget.toFixed(2)} budget`;
-      this.traceEvent({ kind: "log", message: `${msg} — cancelling run` });
+      this.traceEvent({ kind: "log", message: `${msg} — failing run` });
       this.terminalError = msg;
       this.signal();
     }
@@ -890,9 +1109,90 @@ function isRetryable(error: string): boolean {
   // model call and delays the real failure. Config/routing errors plus the
   // structured-output schema rejections (OpenAI/codex strict mode) are all
   // author-fixable, not transient.
-  return !/unknown harness|unregistered extension|fails inputSchema|not supported for remote|allow_writes|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|outputSchema/i.test(
+  return !/unknown harness|unknown extension|unregistered extension|fails inputSchema|not supported for remote|allow_writes|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|output[\s_-]?schema|result exceeds cap|result is not valid JSON/i.test(
     error,
   );
+}
+
+function attemptKey(seq: number, attempt: number): string {
+  return `${seq}:${attempt}`;
+}
+
+function assertHarnessEvent(value: unknown): asserts value is HarnessEvent {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("harness emitted a non-object event");
+  }
+  const event = value as Record<string, unknown>;
+  const kind = event.kind;
+  const stringField = (name: string): void => {
+    if (typeof event[name] !== "string") throw new Error(`harness ${String(kind)} event has invalid ${name}`);
+  };
+  const optionalString = (name: string): void => {
+    if (event[name] !== undefined && typeof event[name] !== "string") {
+      throw new Error(`harness ${String(kind)} event has invalid ${name}`);
+    }
+  };
+  const finiteNumber = (name: string, optional = false): void => {
+    const v = event[name];
+    if (optional && v === undefined) return;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      throw new Error(`harness ${String(kind)} event has invalid ${name}`);
+    }
+  };
+  const jsonField = (name: string): void => {
+    if (event[name] !== undefined) canonicalJson(event[name] as Json);
+  };
+
+  switch (kind) {
+    case "tool-call-open":
+      stringField("id");
+      stringField("name");
+      finiteNumber("atMs");
+      jsonField("input");
+      break;
+    case "tool-call-close":
+      stringField("id");
+      if (event.status !== "ok" && event.status !== "error") {
+        throw new Error("harness tool-call-close event has invalid status");
+      }
+      finiteNumber("atMs");
+      jsonField("result");
+      break;
+    case "text":
+      stringField("delta");
+      finiteNumber("atMs");
+      break;
+    case "usage":
+      finiteNumber("tokensIn", true);
+      finiteNumber("tokensOut", true);
+      finiteNumber("costUsd", true);
+      if (event.costEstimated !== undefined && typeof event.costEstimated !== "boolean") {
+        throw new Error("harness usage event has invalid costEstimated");
+      }
+      break;
+    case "model":
+      optionalString("model");
+      optionalString("reasoningEffort");
+      break;
+    case "session":
+      stringField("sessionId");
+      break;
+    case "denied":
+      stringField("toolName");
+      stringField("reason");
+      finiteNumber("atMs");
+      break;
+    case "result":
+      if (!Object.prototype.hasOwnProperty.call(event, "output")) {
+        throw new Error("harness result event has no output");
+      }
+      break;
+    case "error":
+      stringField("message");
+      break;
+    default:
+      throw new Error(`harness emitted unknown event kind: ${String(kind)}`);
+  }
 }
 
 export function leafSystemPrompt(readOnly: boolean, cwd: string, brief: string): string {

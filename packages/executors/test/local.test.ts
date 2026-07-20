@@ -1,10 +1,15 @@
+import { spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { Proc } from "@orc/core/src/contracts.js";
 import { LocalExecutor } from "../src/local.js";
 import { checkCwd, doctor } from "../src/doctor.js";
 import { executorFor } from "../src/factory.js";
+import { collectRun } from "../src/run.js";
 import { SshExecutor } from "../src/ssh.js";
 
 const local = new LocalExecutor();
@@ -73,6 +78,46 @@ describe("LocalExecutor", () => {
     expect(await waitFor(() => !pidAlive(childPid), 5000)).toBe(true);
   });
 
+  it("kill() escalates against a TERM-ignoring descendant after its leader exits", async () => {
+    // Vitest's own handles would mask an unref()'d escalation timer, so exercise
+    // the lifecycle in a helper whose only remaining handle is that timer.
+    const helper = nodeSpawn(
+      process.execPath,
+      ["--import", "tsx", join(fileURLToPath(new URL(".", import.meta.url)), "helpers", "kill-escalation.ts")],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    helper.stdout.setEncoding("utf8");
+    helper.stderr.setEncoding("utf8");
+    helper.stdout.on("data", (data: string) => (stdout += data));
+    helper.stderr.on("data", (data: string) => (stderr += data));
+    let timeout: NodeJS.Timeout | undefined;
+
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`kill escalation helper timed out: ${stderr}`)), 5000);
+        helper.once("error", reject);
+        helper.once("exit", resolve);
+      });
+      const childPid = Number(stdout.trim());
+      expect(code, stderr).toBe(0);
+      expect(childPid).toBeGreaterThan(0);
+      expect(pidAlive(childPid), "TERM-ignoring descendant leaked after helper exited").toBe(false);
+    } finally {
+      clearTimeout(timeout);
+      helper.kill("SIGKILL");
+      const childPid = Number(stdout.trim());
+      if (childPid > 0 && pidAlive(childPid)) {
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }
+    }
+  });
+
   it("kill() is idempotent", async () => {
     const proc = local.spawn(["sleep", "60"]);
     proc.kill();
@@ -100,6 +145,52 @@ describe("LocalExecutor", () => {
   });
 });
 
+describe("collectRun", () => {
+  it("waits for stdout and stderr bytes that arrive after process exit", async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const proc: Proc = {
+      stdin: null,
+      stdout,
+      stderr,
+      exited: Promise.resolve(0),
+      kill: () => {},
+      pid: 12345,
+    };
+    setImmediate(() => {
+      stdout.end("late stdout");
+      stderr.end("late stderr");
+    });
+
+    await expect(collectRun(proc, { stdin: "ignore" })).resolves.toEqual({
+      code: 0,
+      stdout: "late stdout",
+      stderr: "late stderr",
+    });
+  });
+
+  it("honors the caller timeout while post-exit streams remain open", async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const proc: Proc = {
+      stdin: null,
+      stdout,
+      stderr,
+      exited: Promise.resolve(0),
+      kill: () => {},
+      pid: 12345,
+    };
+
+    await expect(collectRun(proc, { stdin: "ignore", timeoutMs: 20 })).resolves.toEqual({
+      code: -1,
+      stdout: "",
+      stderr: "",
+    });
+    expect(stdout.destroyed).toBe(true);
+    expect(stderr.destroyed).toBe(true);
+  });
+});
+
 describe("executorFor", () => {
   it("returns a cached LocalExecutor for undefined and SshExecutor per host", () => {
     const a = executorFor(undefined);
@@ -110,6 +201,7 @@ describe("executorFor", () => {
     expect(b.host).toBe("frank");
     expect(executorFor("frank")).toBe(b);
     expect(executorFor("user@other")).not.toBe(b);
+    expect(() => executorFor("-oProxyCommand=bad")).toThrow("SshExecutor: invalid destination");
   });
 });
 

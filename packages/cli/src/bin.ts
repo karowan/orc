@@ -5,8 +5,7 @@
  */
 import { Command } from "commander";
 import { z } from "zod";
-import { ALL_OPS, buildRegistry, catalog, type OpContext, type OpDef } from "@orc/ops";
-import { superviseRun, writeReport } from "./deps.js";
+import { ALL_OPS, buildRegistry, catalog, runSupervisorChild, type OpContext, type OpDef } from "@orc/ops";
 import { MonitorServer } from "@orc/ui";
 
 interface JsonSchemaProp {
@@ -14,6 +13,7 @@ interface JsonSchemaProp {
   description?: string;
   enum?: string[];
   default?: unknown;
+  items?: { type?: string | string[] };
 }
 
 function flagName(key: string): string {
@@ -31,24 +31,7 @@ async function main(): Promise<void> {
   // Hidden: the detached supervisor entry (`orc _supervise <runId>`).
   program
     .command("_supervise <runId>", { hidden: true })
-    .action(async (runId: string) => {
-      const registry = await buildRegistry({});
-      const debounce = (() => {
-        let last = 0;
-        return (id: string) => {
-          if (Date.now() - last > 1000) {
-            last = Date.now();
-            try {
-              writeReport(id);
-            } catch {
-              /* best-effort */
-            }
-          }
-        };
-      })();
-      await superviseRun(runId, registry, { onUpdate: debounce });
-      writeReport(runId);
-    });
+    .action((runId: string) => runSupervisorChild(runId));
 
   program
     .command("commands")
@@ -91,6 +74,12 @@ async function main(): Promise<void> {
       const desc = (prop.description ?? "") + (prop.enum ? ` (${prop.enum.join("|")})` : "");
       if (type === "boolean") {
         cmd.option(`--${flag}`, desc);
+        if (prop.default === true) cmd.option(`--no-${flag}`, `disable --${flag}`);
+      } else if (type === "array") {
+        const itemType = Array.isArray(prop.items?.type) ? prop.items.type[0] : prop.items?.type;
+        const spec = `--${flag} <${itemType ?? "value"}...>`;
+        if (required.has(key)) cmd.requiredOption(spec, desc);
+        else cmd.option(spec, desc);
       } else if (required.has(key)) {
         cmd.requiredOption(`--${flag} <${type ?? "value"}>`, desc);
       } else {

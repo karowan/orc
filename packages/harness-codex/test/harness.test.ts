@@ -143,8 +143,7 @@ describe("codexHarness happy path", () => {
     expect(threadStart.approvalPolicy).toBe("never"); // auto -> never
     expect(threadStart.sandbox).toBe("read-only"); // readOnly -> read-only
     expect(threadStart.cwd).toBe(cwd);
-    expect(String(threadStart.developerInstructions)).toContain("you are a test leaf");
-    expect(String(threadStart.developerInstructions)).toContain("orc harness test");
+    expect(threadStart.developerInstructions).toBe("you are a test leaf");
 
     const turnStart = methodParams(record, "turn/start");
     expect(turnStart.threadId).toBe("thread-fake-1");
@@ -171,8 +170,15 @@ describe("codexHarness happy path", () => {
     const ro = await runScenario("happy", { approvalMode: "auto", readOnly: true });
     expect(methodParams(ro.record, "thread/start").sandbox).toBe("read-only");
     // opt-in sandbox -> workspace-write (explicit confinement)
-    const sb = await runScenario("happy", { approvalMode: "auto", readOnly: false, sandbox: true });
-    expect(methodParams(sb.record, "thread/start").sandbox).toBe("workspace-write");
+    const sb = await runScenario("happy", {
+      approvalMode: "auto",
+      readOnly: false,
+      sandbox: true,
+      sandboxDirs: ["/opt/orc-cache"],
+    });
+    const sbStart = methodParams(sb.record, "thread/start");
+    expect(sbStart.sandbox).toBe("workspace-write");
+    expect(sbStart.runtimeWorkspaceRoots).toEqual([sb.cwd, "/opt/orc-cache"]);
     // explicit bypass -> danger-full-access (opt-in max)
     expect(methodParams(bypass.record, "thread/start").sandbox).toBe("danger-full-access");
   });
@@ -183,11 +189,70 @@ describe("codexHarness happy path", () => {
     expect(result.kind === "result" && result.output).toEqual({ text: '{"ok":true,"n":2}' });
   });
 
+  it("removes strict-schema null placeholders before returning user output", async () => {
+    const schema = {
+      type: "object",
+      required: ["name", "nested", "rows", "choice", "variant"],
+      properties: {
+        name: { type: "string" },
+        nickname: { type: "string" },
+        nullable: { type: ["string", "null"] },
+        nested: {
+          type: "object",
+          properties: { note: { type: "string" } },
+        },
+        rows: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { tag: { type: "string" } },
+          },
+        },
+        choice: {
+          anyOf: [
+            { type: "object", properties: { note: { type: "string" } } },
+            {
+              type: "object",
+              required: ["code"],
+              properties: { code: { type: "number" } },
+            },
+          ],
+        },
+        variant: {
+          oneOf: [
+            { type: "object", properties: { label: { type: "string" } } },
+            {
+              type: "object",
+              required: ["count"],
+              properties: { count: { type: "number" } },
+            },
+          ],
+        },
+      },
+    };
+    const { events } = await runScenario("optional-null", { schema });
+    const result = events.at(-1)!;
+    expect(result.kind === "result" && result.output).toEqual({
+      name: "ok",
+      nullable: null,
+      nested: {},
+      rows: [{}],
+      choice: {},
+      variant: {},
+    });
+  });
+
   it("resumes a session via thread/resume", async () => {
-    const { events, record } = await runScenario("happy", { sessionId: "thread-old-7" });
+    const { events, record, cwd } = await runScenario("happy", {
+      sessionId: "thread-old-7",
+      readOnly: false,
+      sandbox: true,
+      sandboxDirs: ["../cache"],
+    });
     expect(record.some((m) => m.method === "thread/start")).toBe(false);
     const resume = methodParams(record, "thread/resume");
     expect(resume.threadId).toBe("thread-old-7");
+    expect(resume.runtimeWorkspaceRoots).toEqual([cwd, join(cwd, "../cache")]);
     const session = events.find((e) => e.kind === "session")!;
     expect(session.kind === "session" && session.sessionId).toBe("thread-old-7");
   });
@@ -236,6 +301,24 @@ describe("codexHarness approval bridging", () => {
     expect(approvalResponse(deny.record)).toEqual({ decision: "denied" });
   });
 
+  it("denies current and legacy command approvals for read-only leaves", async () => {
+    const current = await runScenario(
+      "approval",
+      { approvalMode: "bypass", readOnly: true },
+      { decision: { behavior: "allow" } },
+    );
+    expect(current.approvals).toHaveLength(0);
+    expect(approvalResponse(current.record)).toEqual({ decision: "decline" });
+
+    const legacy = await runScenario(
+      "legacy-approval",
+      { approvalMode: "manual", readOnly: true },
+      { decision: { behavior: "allow" } },
+    );
+    expect(legacy.approvals).toHaveLength(0);
+    expect(approvalResponse(legacy.record)).toEqual({ decision: "denied" });
+  });
+
   it("accept-edits auto-approves fileChange approvals confined to req.cwd", async () => {
     const { approvals, record } = await runScenario("edit-in-cwd", {
       approvalMode: "accept-edits",
@@ -262,6 +345,32 @@ describe("codexHarness approval bridging", () => {
       readOnly: false,
     });
     expect(approvals).toHaveLength(1);
+  });
+
+  it("denies current and legacy file approvals for read-only leaves", async () => {
+    const current = await runScenario("edit-in-cwd", {
+      approvalMode: "accept-edits",
+      readOnly: true,
+    });
+    expect(current.approvals).toHaveLength(0);
+    expect(approvalResponse(current.record)).toEqual({ decision: "decline" });
+
+    const legacy = await runScenario("legacy-edit", {
+      approvalMode: "bypass",
+      readOnly: true,
+    });
+    expect(legacy.approvals).toHaveLength(0);
+    expect(approvalResponse(legacy.record)).toEqual({ decision: "denied" });
+  });
+
+  it("does not treat a lexical parent segment as confined", async () => {
+    const { approvals, record } = await runScenario(
+      "edit-dotdot",
+      { approvalMode: "accept-edits", readOnly: false },
+      { decision: { behavior: "deny" } },
+    );
+    expect(approvals).toHaveLength(1);
+    expect(approvalResponse(record)).toEqual({ decision: "decline" });
   });
 });
 

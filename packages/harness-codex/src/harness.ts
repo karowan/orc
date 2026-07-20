@@ -28,8 +28,10 @@
  * Filesystem policy is orthogonal to approvals (see below): read-only leaf ->
  * "read-only"; a default write leaf OMITS the sandbox param so codex uses the
  * user's own ~/.codex config (never more power than the caller); `sandbox` ->
- * "workspace-write"; explicit `bypass` -> "danger-full-access".
+ * "workspace-write" with cwd + sandboxDirs as runtime workspace roots;
+ * explicit `bypass` -> "danger-full-access".
  */
+import * as path from "node:path";
 import type {
   ApprovalDecision,
   Executor,
@@ -44,7 +46,12 @@ import type {
 } from "@orc/core/src/contracts.js";
 import { estimateCostUsd, loadCostRates, type ModelRate } from "@orc/core/src/cost.js";
 import { JsonRpcClient } from "./rpc.js";
-import { extractFirstJsonObject, lintStrictOutputSchema, normalizeSchema } from "./schema.js";
+import {
+  extractFirstJsonObject,
+  lintStrictOutputSchema,
+  normalizeSchema,
+  restoreOptionalNulls,
+} from "./schema.js";
 
 export interface CodexHarnessOptions {
   /** Command spawned through the executor. Default: ["codex", "app-server"]. */
@@ -128,10 +135,10 @@ function asRecord(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" ? (v as Record<string, unknown>) : {};
 }
 
-/** Is `path` inside (or equal to) directory `root`? Plain path-prefix check. */
-function withinDir(path: string, root: string): boolean {
-  const norm = root.endsWith("/") ? root : root + "/";
-  return path === root || path.startsWith(norm);
+/** Is `candidate` lexically inside (or equal to) directory `root`? */
+function withinDir(candidate: string, root: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(root, candidate));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 /** Collect changed file paths from a fileChange item / legacy fileChanges map. */
@@ -277,6 +284,16 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         : req.approvalMode === "bypass"
           ? "danger-full-access"
           : undefined;
+    const runtimeWorkspaceRoots =
+      req.sandbox && !req.readOnly
+        ? [
+            ...new Set(
+              [req.cwd, ...(req.sandboxDirs ?? [])].map((root) =>
+                path.normalize(path.isAbsolute(root) ? root : path.resolve(req.cwd, root)),
+              ),
+            ),
+          ]
+        : undefined;
 
     // Announce the model/effort actually being requested (codex uses its
     // configured default when req.model is unset).
@@ -472,7 +489,18 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       return decision;
     };
 
+    const denyReadOnly = (toolName: string): ApprovalDecision => {
+      queue.push({
+        kind: "denied",
+        toolName,
+        reason: "read-only leaf denied approval",
+        atMs: Date.now(),
+      });
+      return { behavior: "deny" };
+    };
+
     const decideFileChange = async (paths: string[], grantRoot: unknown, input: Json) => {
+      if (req.readOnly) return denyReadOnly("edit");
       const confined =
         paths.length > 0 &&
         paths.every((p) => withinDir(p, req.cwd)) &&
@@ -495,13 +523,15 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         case "item/commandExecution/requestApproval": {
           const item = typeof params.itemId === "string" ? itemsById.get(params.itemId) : undefined;
           const decision =
-            req.approvalMode === "auto" || req.approvalMode === "bypass"
-              ? ({ behavior: "allow" } as ApprovalDecision)
-              : await bridgeApproval("command", {
-                  command: (params.command ?? item?.command ?? null) as Json,
-                  cwd: (params.cwd ?? item?.cwd ?? null) as Json,
-                  reason: (params.reason ?? null) as Json,
-                });
+            req.readOnly
+              ? denyReadOnly("command")
+              : req.approvalMode === "auto" || req.approvalMode === "bypass"
+                ? ({ behavior: "allow" } as ApprovalDecision)
+                : await bridgeApproval("command", {
+                    command: (params.command ?? item?.command ?? null) as Json,
+                    cwd: (params.cwd ?? item?.cwd ?? null) as Json,
+                    reason: (params.reason ?? null) as Json,
+                  });
           return { decision: decision.behavior === "allow" ? "accept" : "decline" };
         }
         case "item/fileChange/requestApproval": {
@@ -517,13 +547,15 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         // --- legacy approval family (older servers) ----------------------
         case "execCommandApproval": {
           const decision =
-            req.approvalMode === "auto" || req.approvalMode === "bypass"
-              ? ({ behavior: "allow" } as ApprovalDecision)
-              : await bridgeApproval("command", {
-                  command: (params.command ?? null) as Json,
-                  cwd: (params.cwd ?? null) as Json,
-                  reason: (params.reason ?? null) as Json,
-                });
+            req.readOnly
+              ? denyReadOnly("command")
+              : req.approvalMode === "auto" || req.approvalMode === "bypass"
+                ? ({ behavior: "allow" } as ApprovalDecision)
+                : await bridgeApproval("command", {
+                    command: (params.command ?? null) as Json,
+                    cwd: (params.cwd ?? null) as Json,
+                    reason: (params.reason ?? null) as Json,
+                  });
           return { decision: decision.behavior === "allow" ? "approved" : "denied" };
         }
         case "applyPatchApproval": {
@@ -558,13 +590,13 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       await rpc.request("initialize", { clientInfo });
       rpc.notify("initialized", {});
 
-      const developerInstructions =
-        [req.system, req.brief].filter((s) => s && s.trim() !== "").join("\n\n") || undefined;
+      const developerInstructions = req.system.trim() || undefined;
 
       if (req.sessionId) {
         const resumed = await rpc.request<ThreadStartResult>("thread/resume", {
           threadId: req.sessionId,
           cwd: req.cwd,
+          ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
           ...(sandbox !== undefined ? { sandbox } : {}), // omit -> inherit user's config default
           ...(developerInstructions ? { developerInstructions } : {}),
@@ -573,6 +605,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       } else {
         const started = await rpc.request<ThreadStartResult>("thread/start", {
           cwd: req.cwd,
+          ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
           ...(sandbox !== undefined ? { sandbox } : {}), // omit -> inherit user's config default
           ...(developerInstructions ? { developerInstructions } : {}),
@@ -626,7 +659,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             });
             return;
           }
-          queue.push({ kind: "result", output });
+          queue.push({ kind: "result", output: restoreOptionalNulls(output, req.schema) });
         } else {
           queue.push({ kind: "result", output: { text: message } });
         }

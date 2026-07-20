@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/executors" },
+    { "path": "packages/harness-claude" },
+    { "path": "packages/harness-codex" },
+    { "path": "packages/ui" },
+    { "path": "packages/ops" },
+    { "path": "packages/sdk" },
+    { "path": "packages/mcp" },
+    { "path": "packages/cli" }
+  ]
+}

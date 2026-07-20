@@ -4,6 +4,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
+    "ajv": "^8.20.0",
     "quickjs-emscripten": "^0.31.0",
     "esbuild": "^0.25.0",
     "zod": "^4.1.0"

@@ -40,16 +40,19 @@ ordinary values (`JSON.stringify` a result into the next prompt). There is no
 
 ## Architecture
 
+The canonical rationale, invariants, and accepted tradeoffs live in
+[DESIGN.html](./DESIGN.html).
+
 | Package | Role |
 |---|---|
 | `@orc/core` | The engine: QuickJS deterministic event loop, sequence identity, journal (WAL) + trace sidecar, content-addressed results, scheduler (`maxParallel`), policy caps, replay + fail-forward resume, supervisor. |
 | `@orc/executors` | `LocalExecutor` (process groups) and `SshExecutor` (system `ssh`, honours `~/.ssh/config`). One `Executor` interface; `cwd` and `host` are separate fields. |
 | `@orc/harness-claude` | Built-in harness: Anthropic Agent SDK locally, claude CLI stream-json over ssh for remote hosts. |
 | `@orc/harness-codex` | Built-in harness: `codex app-server` JSON-RPC, run through the executor so it works locally **and** over ssh unchanged. |
-| `@orc/ops` | The zod-first operation registry — one source of truth for every surface. Plus registry assembly (zero-config built-ins). |
+| `@orc/ops` | The zod-first operation registry — canonical definitions for registry-backed commands and tools. Plus registry assembly (zero-config built-ins). |
 | `@orc/cli` | `orc …` — every command is a runtime interpretation of the registry (flags, help, `orc commands --json` all derived). |
 | `@orc/mcp` | stdio MCP server; the same ops as tools, zod schemas native, `readOnlyHint` discipline. |
-| `@orc/sdk` | Embedded TypeScript SDK (`new Orc().launch(...)`, `run.watch()`), types via `z.infer`; plus `@orc/sdk/program` for authors. |
+| `@orc/sdk` | Embedded TypeScript SDK (`new Orc().launch(...)`, `run.watch()`), input types via `z.input`; plus `@orc/sdk/program` for authors. |
 | `@orc/ui` | Trace projection → self-contained `report.html` + a live SSE waterfall server. |
 
 ## Determinism & durability (no Temporal)
@@ -97,6 +100,9 @@ them natively (claude `permissionMode` incl. `dontAsk` for `auto`; codex
 `approvalPolicy`/sandbox). Pending approvals bubble into the monitor, CLI
 (`orc approvals` / `orc respond`), MCP, and `run.watch()`. Default substrate is the
 user's own settings (claude `settingSources`, codex `~/.codex/config.toml`).
+`readOnly` blocks built-in command and file-mutation tools but deliberately does
+not disable configured hooks and MCPs such as Computer Use; their side effects
+are outside that guarantee.
 
 ## Config (optional)
 

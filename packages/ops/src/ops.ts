@@ -6,10 +6,12 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   DEFAULT_POLICY,
   ProgramVM,
+  acquireLock,
   appendControl,
   compileProgram,
   listRuns,
@@ -35,6 +37,7 @@ import { GUIDE } from "./guide.js";
 
 export interface OpContext {
   registry: Registry;
+  registryCwd?: string;
   mcpClientName?: string;
 }
 
@@ -59,6 +62,7 @@ interface FirstFrontierCall {
   id?: string;
   readOnly: boolean;
   harness?: string;
+  host?: string;
   model?: string;
   reasoningEffort?: string;
   schema?: Json;
@@ -81,7 +85,7 @@ export const launch = defineOp({
     sandboxDirs: z.array(z.string()).optional().describe("extra writable roots when sandboxed (e.g. cache dirs outside the workspace)"),
     maxParallel: z.number().int().min(1).max(64).optional(),
     idleTimeoutSeconds: z.number().int().optional().describe("run default for the per-call output-idle watchdog; 0 disables"),
-    budget: z.number().positive().optional().describe("USD cap: cancel the run once its estimated cost exceeds this"),
+    budget: z.number().positive().optional().describe("reactive USD cap: fail the run once observed estimated cost exceeds this (may overshoot)"),
     name: z.string().optional(),
     harness: z.string().optional().describe("default harness override (else caller affinity → codex)"),
     wait: z.boolean().default(false).describe("supervise in the foreground and return the final status"),
@@ -118,7 +122,7 @@ export const launch = defineOp({
       const status = await superviseRun(manifest.runId, ctx.registry, { onUpdate: debouncedReport() });
       return { runId: manifest.runId, requestsWrite, monitorUrl, reportPath: runPaths(manifest.runId).report, status };
     }
-    spawnDetachedSupervisor(manifest.runId);
+    await spawnDetachedSupervisor(manifest.runId, ctx.registryCwd);
     return {
       runId: manifest.runId,
       requestsWrite,
@@ -138,7 +142,8 @@ export const validate = defineOp({
   input: z.object({
     programPath: z.string(),
     allowWrites: z.boolean().default(false),
-    approvalMode: z.enum(["manual", "accept-edits", "auto", "bypass"]).optional().describe("check the first-frontier harnesses can honor this mode"),
+    approvalMode: ApprovalMode.default("auto").describe("check the first-frontier harnesses can honor this mode"),
+    harness: z.string().optional().describe("default harness override (same precedence as launch)"),
     host: z.string().optional().describe("check capabilities on this remote host"),
     checkCapabilities: z.boolean().default(true).describe("probe referenced harnesses for model/effort/mode support (slower)"),
   }),
@@ -157,6 +162,7 @@ export const validate = defineOp({
             id: spec.id,
             readOnly: spec.readOnly,
             harness: spec.harness,
+            host: spec.host,
             model: spec.model,
             reasoningEffort: spec.reasoningEffort,
             schema: spec.schema,
@@ -175,28 +181,39 @@ export const validate = defineOp({
       vm?.dispose();
     }
 
-    // Cache capability probes per harness so we discover each at most once.
-    const capsCache = new Map<string, HarnessCapabilities | null>();
-    const capsFor = async (harnessName: string): Promise<HarnessCapabilities | null> => {
-      if (capsCache.has(harnessName)) return capsCache.get(harnessName)!;
+    // Host can change per leaf, so only share probes with the same effective
+    // harness and executor destination.
+    const capsCache = new Map<string, Promise<HarnessCapabilities>>();
+    const capsFor = (harnessName: string, host: string | undefined): Promise<HarnessCapabilities> => {
+      const key = JSON.stringify([harnessName, host]);
+      const cached = capsCache.get(key);
+      if (cached) return cached;
       const harness = ctx.registry.harnesses.get(harnessName);
-      if (!harness) return null;
-      const caps = await harness
-        .discover({ executor: ctx.registry.executorFor(input.host) })
-        .catch(() => null);
-      capsCache.set(harnessName, caps);
-      return caps;
+      if (!harness) return Promise.reject(new Error(`unknown harness "${harnessName}"`));
+      const pending = Promise.resolve().then(() =>
+        harness.discover({ executor: ctx.registry.executorFor(host) }),
+      );
+      capsCache.set(key, pending);
+      return pending;
     };
 
     for (const call of firstCalls) {
+      if (call.kind.startsWith("ext:")) {
+        const extension = ctx.registry.extensions.get(call.kind.slice(4));
+        if (!extension) {
+          problems.push(`call ${call.seq} uses unregistered extension ${call.kind} (register it in orc.config)`);
+        } else {
+          // Runtime registration is authoritative; the program cannot make a
+          // write extension appear read-only.
+          call.readOnly = extension.readOnly;
+        }
+      }
       if (!call.readOnly && !input.allowWrites) {
         problems.push(`call ${call.seq} declares readOnly:false but allowWrites was not granted (fail-closed at dispatch)`);
       }
-      if (call.kind.startsWith("ext:") && !ctx.registry.extensions.has(call.kind.slice(4))) {
-        problems.push(`call ${call.seq} uses unregistered extension ${call.kind} (register it in orc.config)`);
-      }
       if (call.kind === "agent") {
-        const harnessName = call.harness ?? ctx.registry.defaultHarness;
+        const harnessName = call.harness ?? input.harness ?? ctx.registry.defaultHarness;
+        const host = call.host ?? input.host;
         const harness = ctx.registry.harnesses.get(harnessName);
         if (!harness) {
           problems.push(`call ${call.seq} uses unknown harness "${harnessName}" (available: ${[...ctx.registry.harnesses.keys()].join(", ")})`);
@@ -211,10 +228,21 @@ export const validate = defineOp({
           }
         }
         if (harness && input.checkCapabilities) {
-          const caps = await capsFor(harnessName);
-          if (caps && !caps.available) {
+          let caps: HarnessCapabilities;
+          try {
+            caps = await capsFor(harnessName, host);
+          } catch (err) {
+            problems.push(
+              `call ${call.seq}: could not discover harness "${harnessName}"${host ? ` on ${host}` : ""} (${String(err instanceof Error ? err.message : err)})`,
+            );
+            continue;
+          }
+          if (!caps.available) {
             problems.push(`call ${call.seq}: harness "${harnessName}" is not available (${caps.detail ?? "not found"})`);
-          } else if (caps) {
+          } else {
+            if (call.schema !== undefined && !caps.structuredOutput) {
+              problems.push(`call ${call.seq}: harness "${harnessName}" does not support structured output`);
+            }
             const modelIds = caps.models.map((m) => m.id);
             const matched = call.model ? caps.models.find((m) => m.id === call.model) : undefined;
             if (call.model && modelIds.length > 0 && !matched) {
@@ -239,8 +267,9 @@ export const validate = defineOp({
                 }
               }
             }
-            if (input.approvalMode && caps.approvalModes.length > 0 && !caps.approvalModes.includes(input.approvalMode)) {
-              problems.push(`call ${call.seq}: harness "${harnessName}" cannot honor approval mode "${input.approvalMode}"${input.host ? " over ssh" : ""} (supports: ${caps.approvalModes.join(", ")})`);
+            const approvalMode = input.approvalMode ?? "auto";
+            if (caps.approvalModes.length > 0 && !caps.approvalModes.includes(approvalMode)) {
+              problems.push(`call ${call.seq}: harness "${harnessName}" cannot honor approval mode "${approvalMode}"${host ? " over ssh" : ""} (supports: ${caps.approvalModes.join(", ")})`);
             }
           }
         }
@@ -351,12 +380,13 @@ export const list = defineOp({
 
 export const cancel = defineOp({
   name: "cancel",
-  doc: "Cancel a running run (SIGTERM-grace-SIGKILL for its leaves).",
+  doc: "Queue cancellation. Local leaves get TERM→KILL; plain SSH only confirms channel teardown, so remote process state may be unknown.",
   readOnly: false,
   input: z.object({ runId: RunId }),
   async handler(input) {
+    requireRunningRun(input.runId);
     appendControl(input.runId, { t: "cancel", atMs: Date.now() });
-    return { ok: true };
+    return { enqueued: true };
   },
 });
 
@@ -374,7 +404,13 @@ export const resume = defineOp({
       const s = await superviseRun(input.runId, ctx.registry, { onUpdate: debouncedReport() });
       return { runId: input.runId, status: s };
     }
-    spawnDetachedSupervisor(input.runId);
+    const current = statusForRun(input.runId);
+    if (current.state === "completed") throw new Error(`run ${input.runId} already completed`);
+    const lock = await acquireLock(runPaths(input.runId));
+    await lock.release();
+    // tradeoff: releasing before spawn leaves a small ownership race; an
+    // atomic handoff needs a supervisor protocol rather than this one-shot CLI.
+    await spawnDetachedSupervisor(input.runId, ctx.registryCwd);
     return { runId: input.runId, resumed: true };
   },
 });
@@ -391,7 +427,7 @@ export const listApprovals = defineOp({
 
 export const respondApproval = defineOp({
   name: "respond",
-  doc: "Answer a pending approval request.",
+  doc: "Queue an answer for a pending approval request.",
   readOnly: false,
   input: z.object({
     runId: RunId,
@@ -400,6 +436,10 @@ export const respondApproval = defineOp({
     message: z.string().optional(),
   }),
   async handler(input) {
+    requireRunningRun(input.runId);
+    if (!openApprovals(readTraces(input.runId)).some((approval) => approval.id === input.approvalId)) {
+      throw new Error(`approval ${input.approvalId} is not pending for run ${input.runId}`);
+    }
     appendControl(input.runId, {
       t: "approval",
       approvalId: input.approvalId,
@@ -407,7 +447,7 @@ export const respondApproval = defineOp({
       by: "operator",
       atMs: Date.now(),
     });
-    return { ok: true };
+    return { enqueued: true };
   },
 });
 
@@ -613,34 +653,90 @@ function debouncedReport(): (runId: string) => void {
   };
 }
 
-/**
- * Detached supervisor child: re-invokes THIS entrypoint with `_supervise <id>`.
- * Works in both dev (tsx-loaded .ts entry) and a bundled/global install (.mjs).
- * ORC_CLI_ENTRY lets a wrapper pin the entry explicitly.
- */
-export function spawnDetachedSupervisor(runId: string): void {
-  const entry = process.env.ORC_CLI_ENTRY ?? process.argv[1] ?? "";
-  const needsTsx = entry.endsWith(".ts");
-  const args = needsTsx ? ["--import", "tsx", entry, "_supervise", runId] : [entry, "_supervise", runId];
+function requireRunningRun(runId: string): RunStatus {
+  const current = statusForRun(runId);
+  if (current.state !== "running") throw new Error(`run ${runId} is ${current.state}, not running`);
+  return current;
+}
+
+function detachedSupervisorArgs(runId: string): string[] {
+  const owner = fileURLToPath(import.meta.url);
+  const basename = path.basename(owner);
+  if (basename === "ops.ts") {
+    return ["--import", "tsx", fileURLToPath(new URL("./supervisor-entry.ts", import.meta.url)), runId];
+  }
+  if (basename === "ops.js") {
+    return [fileURLToPath(new URL("./supervisor-entry.js", import.meta.url)), runId];
+  }
+  if (basename === "orc.mjs") return [owner, "_supervise", runId];
+  throw new Error(`detached supervisor entry is unavailable from bundled @orc/ops (${basename}); keep @orc/ops external`);
+}
+
+/** Start the package-owned detached supervisor and wait for its startup signal. */
+export async function spawnDetachedSupervisor(runId: string, registryCwd?: string): Promise<void> {
+  const args = detachedSupervisorArgs(runId);
+  const env = { ...process.env };
+  if (registryCwd === undefined) delete env.ORC_SUPERVISOR_REGISTRY_CWD;
+  else env.ORC_SUPERVISOR_REGISTRY_CWD = registryCwd;
   const child = spawn(process.execPath, args, {
     detached: true,
-    stdio: "ignore",
-    env: { ...process.env },
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    env,
   });
-  child.unref();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error("detached supervisor did not start within 10 seconds")), 10_000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.removeListener("message", onMessage);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+    };
+    const finish = (err?: Error) => {
+      cleanup();
+      if (err) {
+        if (child.connected) child.disconnect();
+        child.kill();
+        child.unref();
+        reject(err);
+      } else {
+        child.unref();
+        resolve();
+      }
+    };
+    const onMessage = (message: unknown) => {
+      if (!message || typeof message !== "object") return;
+      const startup = message as { type?: unknown; message?: unknown };
+      if (startup.type === "orc-supervisor-ready") finish();
+      if (startup.type === "orc-supervisor-error") {
+        finish(new Error(typeof startup.message === "string" ? startup.message : "detached supervisor failed to start"));
+      }
+    };
+    const onError = (err: Error) => finish(err);
+    const onExit = (code: number | null) => finish(new Error(`detached supervisor exited during startup (code ${code ?? "signal"})`));
+    child.on("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
 }
 
 let monitorSingleton: MonitorServer | null = null;
 async function ensureMonitor(runId?: string): Promise<string> {
-  const port = portForHome(orcHome());
-  const base = `http://127.0.0.1:${port}`;
-  // Is one already serving (this process or another)?
-  const alive = await fetch(`${base}/`, { signal: AbortSignal.timeout(500) })
-    .then((r) => r.ok)
-    .catch(() => false);
-  if (!alive) {
+  const home = orcHome();
+  const firstPort = portForHome(home);
+  let base: string | undefined;
+  for (let offset = 0; offset <= 20; offset++) {
+    const candidate = `http://127.0.0.1:${firstPort + offset}`;
+    const health = await fetch(`${candidate}/health.json`, { signal: AbortSignal.timeout(500) })
+      .then(async (response) => response.ok ? await response.json() as { service?: unknown; home?: unknown } : undefined)
+      .catch(() => undefined);
+    if (health?.service === "orc-monitor" && health.home === home) {
+      base = candidate;
+      break;
+    }
+  }
+  if (!base) {
     monitorSingleton ??= new MonitorServer();
-    await monitorSingleton.start();
+    base = (await monitorSingleton.start()).url;
   }
   return runId ? `${base}/runs/${runId}` : base;
 }

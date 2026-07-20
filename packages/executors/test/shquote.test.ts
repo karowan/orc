@@ -24,13 +24,23 @@ const NASTY: string[] = [
   "(parens) {braces}",
   "!history",
   "a'b\"c$d`e\\f g\nh",
+  "=ls",
+  "^",
+  "a^b",
 ];
 
 describe("shQuote", () => {
-  it("round-trips nasty strings through a real shell", async () => {
+  it("round-trips nasty strings through zsh with extended globbing", async () => {
     const local = new LocalExecutor();
     for (const s of NASTY) {
-      const { code, stdout } = await local.run(["sh", "-c", `printf %s ${shQuote(s)}`]);
+      const { code, stdout } = await local.run([
+        "zsh",
+        "-f",
+        "-o",
+        "EXTENDED_GLOB",
+        "-c",
+        `printf %s ${shQuote(s)}`,
+      ]);
       expect(code, `exit for ${JSON.stringify(s)}`).toBe(0);
       expect(stdout, `round-trip of ${JSON.stringify(s)}`).toBe(s);
     }
@@ -48,10 +58,12 @@ describe("shQuote", () => {
     expect(stdout).toBe(argv.join("|") + "|");
   });
 
-  it("leaves safe words untouched and quotes the rest", () => {
-    expect(shQuote("abc/def.txt")).toBe("abc/def.txt");
+  it("quotes every word, including zsh expansion syntax", () => {
+    expect(shQuote("abc/def.txt")).toBe("'abc/def.txt'");
     expect(shQuote("a b")).toBe("'a b'");
     expect(shQuote("")).toBe("''");
     expect(shQuote("it's")).toBe(`'it'\\''s'`);
+    expect(shQuote("=ls")).toBe("'=ls'");
+    expect(shQuote("a^b")).toBe("'a^b'");
   });
 });

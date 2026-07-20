@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { canonicalJson, sha256Hex } from "./canonical.js";
 import type { Json, JournalRecord, RunManifest, TraceRecord, ControlMessage } from "./contracts.js";
 
@@ -20,8 +22,54 @@ export function runDir(runId: string): string {
 
 export function newRunId(name?: string): string {
   const slug = (name ?? "run").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "run";
-  const rand = Math.random().toString(36).slice(2, 8);
+  const rand = randomBytes(8).toString("hex");
   return `r_${slug}_${rand}`;
+}
+
+function writeAll(fd: number, data: Buffer): void {
+  let offset = 0;
+  while (offset < data.byteLength) {
+    const written = fs.writeSync(fd, data, offset, data.byteLength - offset);
+    if (written === 0) throw new Error("failed to make progress writing record");
+    offset += written;
+  }
+}
+
+function readFully(fd: number, data: Buffer, length: number, position: number): number {
+  let offset = 0;
+  while (offset < length) {
+    const read = fs.readSync(fd, data, offset, length - offset, position + offset);
+    if (read === 0) break;
+    offset += read;
+  }
+  return offset;
+}
+
+function truncateUnterminatedTail(filePath: string): void {
+  if (!fs.existsSync(filePath)) return;
+  const fd = fs.openSync(filePath, "r+");
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return;
+    const last = Buffer.allocUnsafe(1);
+    if (readFully(fd, last, 1, size - 1) !== 1) return;
+    if (last[0] === 0x0a) return;
+
+    const chunk = Buffer.allocUnsafe(Math.min(size, 64 * 1024));
+    for (let end = size; end > 0; ) {
+      const start = Math.max(0, end - chunk.byteLength);
+      const read = readFully(fd, chunk, end - start, start);
+      const newline = chunk.subarray(0, read).lastIndexOf(0x0a);
+      if (newline >= 0) {
+        fs.ftruncateSync(fd, start + newline + 1);
+        return;
+      }
+      end = start;
+    }
+    fs.ftruncateSync(fd, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**
@@ -33,23 +81,13 @@ export class JsonlAppender<T> {
   private fd: number;
   constructor(readonly filePath: string) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    // Torn-tail repair: if a crash left a partial final line (no newline),
-    // terminate it so the fragment stays isolated instead of corrupting the
-    // next append. Readers skip the unparseable fragment.
-    if (fs.existsSync(filePath)) {
-      const stat = fs.statSync(filePath);
-      if (stat.size > 0) {
-        const tail = Buffer.alloc(1);
-        const rfd = fs.openSync(filePath, "r");
-        fs.readSync(rfd, tail, 0, 1, stat.size - 1);
-        fs.closeSync(rfd);
-        if (tail[0] !== 0x0a) fs.appendFileSync(filePath, "\n");
-      }
-    }
+    // A record without its newline was never committed. Remove it before the
+    // next append so corruption cannot become an accepted interior line.
+    truncateUnterminatedTail(filePath);
     this.fd = fs.openSync(filePath, "a");
   }
   append(record: T, opts?: { fsync?: boolean }): void {
-    fs.writeSync(this.fd, JSON.stringify(record) + "\n");
+    writeAll(this.fd, Buffer.from(JSON.stringify(record) + "\n"));
     if (opts?.fsync !== false) fs.fsyncSync(this.fd);
   }
   close(): void {
@@ -66,15 +104,19 @@ export function readJsonl<T>(filePath: string): T[] {
   if (!fs.existsSync(filePath)) return [];
   const raw = fs.readFileSync(filePath, "utf8");
   const out: T[] = [];
-  for (const line of raw.split("\n")) {
+  const lines = raw.split("\n");
+  // The final split element is either empty (committed newline) or the one
+  // uncommitted crash fragment readers are allowed to ignore.
+  lines.pop();
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       out.push(JSON.parse(trimmed) as T);
-    } catch {
-      // torn record (crash mid-append) — it was never fsync-acknowledged.
-      // Skip it and keep reading: records appended after a repaired tail are valid.
-      continue;
+    } catch (err) {
+      throw new Error(
+        `malformed JSONL record in ${filePath} at line ${index + 1}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   return out;
@@ -109,7 +151,9 @@ export function runPaths(runId: string): RunPaths {
 
 export function createRunDir(manifest: RunManifest, programBundle: string): RunPaths {
   const paths = runPaths(manifest.runId);
-  fs.mkdirSync(paths.results, { recursive: true });
+  fs.mkdirSync(runsDir(), { recursive: true });
+  fs.mkdirSync(paths.dir);
+  fs.mkdirSync(paths.results);
   fs.writeFileSync(paths.program, programBundle);
   fs.writeFileSync(paths.manifest, JSON.stringify(manifest, null, 2));
   return paths;
@@ -175,50 +219,103 @@ export function appendControl(runId: string, msg: ControlMessage): void {
 }
 
 // ---------------------------------------------------------------------------
-// Supervisor lock: pid + heartbeat mtime. resume/launch refuse while live.
+// Supervisor lock: a platform advisory lock held by a tiny child process.
 // ---------------------------------------------------------------------------
-const LOCK_STALE_MS = 30_000;
+const LOCK_READY = "orc-lock-ready:";
+const LOCK_HOLDER = `process.stdout.write(${JSON.stringify(LOCK_READY)}+process.pid+"\\n");process.stdin.resume()`;
 
-export function acquireLock(paths: RunPaths): { release(): void; beat(): void } {
-  if (fs.existsSync(paths.lock)) {
-    const stat = fs.statSync(paths.lock);
-    const pid = Number(fs.readFileSync(paths.lock, "utf8").trim());
-    const fresh = Date.now() - stat.mtimeMs < LOCK_STALE_MS;
-    if (fresh && pid && isAlive(pid)) {
-      throw new Error(`run is owned by a live supervisor (pid ${pid})`);
-    }
+export async function acquireLock(
+  paths: RunPaths,
+): Promise<{ release(): Promise<void>; beat(): void; lost: Promise<never>; holderPid: number }> {
+  fs.mkdirSync(path.dirname(paths.lock), { recursive: true });
+  const command =
+    process.platform === "darwin"
+      ? ["/usr/bin/lockf", "-k", "-s", "-t", "0", paths.lock]
+      : process.platform === "linux"
+        ? ["flock", "-n", paths.lock]
+        : undefined;
+  if (!command) {
+    throw new Error(`supervisor locking is unsupported on ${process.platform}`);
   }
-  fs.writeFileSync(paths.lock, String(process.pid));
-  const interval = setInterval(() => {
-    try {
-      const now = new Date();
-      fs.utimesSync(paths.lock, now, now);
-    } catch {
-      /* run dir removed */
+  command.push(process.execPath, "-e", LOCK_HOLDER);
+  const child = spawn(command[0], command.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.on("error", () => {
+    /* acquisition/exit paths report the child outcome */
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const spawnFailed = new Promise<never>((_, reject) => {
+    child.once("error", reject);
+  });
+  let holderPid: number | undefined;
+  let acquireTimer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        const onData = () => {
+          const match = stdout.match(/orc-lock-ready:(\d+)\n/);
+          if (!match) return;
+          holderPid = Number(match[1]);
+          child.stdout.removeListener("data", onData);
+          resolve();
+        };
+        child.stdout.on("data", onData);
+      }),
+      exited.then(({ code, signal }) => {
+        throw new Error(
+          code === 75 || (process.platform === "linux" && code === 1)
+            ? "run is owned by a live supervisor"
+            : `failed to acquire supervisor lock (${signal ?? code}): ${stderr.trim()}`,
+        );
+      }),
+      spawnFailed,
+      new Promise<never>((_, reject) => {
+        acquireTimer = setTimeout(
+          () => reject(new Error("timed out acquiring supervisor lock")),
+          5_000,
+        );
+        acquireTimer.unref();
+      }),
+    ]);
+  } catch (err) {
+    child.stdin.end();
+    child.kill();
+    await exited;
+    throw err;
+  } finally {
+    if (acquireTimer) clearTimeout(acquireTimer);
+  }
+
+  let released = false;
+  const lost: Promise<never> = exited.then(({ code, signal }) => {
+    if (!released) {
+      throw new Error(`supervisor lock holder exited unexpectedly (${signal ?? code})`);
     }
-  }, 5_000);
-  interval.unref();
+    return new Promise<never>(() => undefined);
+  });
+  void lost.catch(() => undefined);
   return {
+    holderPid: holderPid!,
+    lost,
     beat() {
-      const now = new Date();
-      fs.utimesSync(paths.lock, now, now);
+      if (child.exitCode !== null) throw new Error("supervisor lock was lost");
     },
-    release() {
-      clearInterval(interval);
-      try {
-        fs.unlinkSync(paths.lock);
-      } catch {
-        /* gone */
-      }
+    async release() {
+      if (released) return;
+      released = true;
+      child.stdin.end();
+      await exited;
     },
   };
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }

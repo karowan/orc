@@ -2,7 +2,6 @@
  * The orc authoring + usage guide. One source of truth surfaced by:
  *  - CLI:  `orc guide`
  *  - MCP:  the `orc_guide` tool
- *  - SDK:  Orc.guide()
  */
 export const GUIDE = `# orc — how to write and run a program
 
@@ -97,12 +96,13 @@ loops for control flow.
 
 ## Writing files
 
-By default leaves are read-only. To let a leaf modify files, set
-\`readOnly: false\` and launch the run with \`--allow-writes\`. A write leaf runs
-with whatever permissions your own agent has; add \`--sandbox\` to confine its
-writes to the working directory. If a run stops on a write leaf, \`orc resume\`
-picks it back up (it re-checks the working-tree state first, never blindly
-redoing work).
+By default leaves are read-only. To let a leaf directly modify files or run
+mutating commands, set \`readOnly: false\` and launch the run with
+\`--allow-writes\`. Configured hooks and MCP tools are not disabled for read-only
+leaves; their side effects are outside this guarantee. A write leaf runs with
+whatever permissions your own agent has; add \`--sandbox\` to confine its writes
+to the working directory. If a run stops on a write leaf, \`orc resume\` picks it
+back up (it re-checks the working-tree state first, never blindly redoing work).
 
 ## 2. Validate and launch
 
@@ -111,9 +111,9 @@ redoing work).
 
 \`--brief\` (required) is shared context added to every leaf. Common launch flags:
 \`--allow-writes\`, \`--host <ssh>\`, \`--approval-mode manual|accept-edits|auto|bypass\`,
-\`--sandbox\`, \`--harness claude|codex\`, \`--budget <usd>\` (cancel the run once its
-estimated cost exceeds this), \`--wait\` (block for the result instead of running
-in the background).
+\`--sandbox\`, \`--harness claude|codex\`, \`--budget <usd>\` (fail the run after
+observed estimated cost exceeds this; concurrent work may overshoot), \`--wait\`
+(block for the result instead of running in the background).
 
 ## 3. Watch and collect
 

@@ -55,8 +55,15 @@ export class LocalExecutor implements Executor {
       };
       signalGroup("SIGTERM");
       const escalate = setTimeout(() => signalGroup("SIGKILL"), graceMs);
-      escalate.unref();
-      void exited.then(() => clearTimeout(escalate));
+      // The process-group leader can exit while TERM-ignoring descendants live.
+      // Keep escalation alive only while that group still exists.
+      void exited.then(() => {
+        try {
+          process.kill(-pid, 0);
+        } catch {
+          clearTimeout(escalate);
+        }
+      });
     };
 
     return {

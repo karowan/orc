@@ -20,8 +20,8 @@ import {
 } from "@orc/ops";
 import { readTraces, openApprovals, statusForRun, type Json, type RunStatus } from "@orc/core";
 
-export type LaunchInput = z.infer<typeof launchOp.input>;
-export type ValidateInput = z.infer<typeof validateOp.input>;
+export type LaunchInput = z.input<typeof launchOp.input>;
+export type ValidateInput = z.input<typeof validateOp.input>;
 
 export type RunEvent =
   | { kind: "status"; status: RunStatus }
@@ -39,11 +39,9 @@ export class OrcRun {
   }
 
   async wait(timeoutSeconds = 300): Promise<RunStatus> {
+    const input = waitOp.input.parse({ runId: this.runId, timeoutSeconds });
     const ctx = await this.orc.ctx();
-    for (;;) {
-      const res = await waitOp.handler({ runId: this.runId, timeoutSeconds }, ctx);
-      if (!res.timedOut) return res.status;
-    }
+    return (await waitOp.handler(input, ctx)).status;
   }
 
   /** Typed event stream: status ticks, answerable approvals, terminal done. */
@@ -98,6 +96,7 @@ export class Orc {
   async ctx(): Promise<OpContext> {
     this.context ??= {
       registry: await buildRegistry({ cwd: this.opts.cwd, defaultHarness: this.opts.defaultHarness }),
+      registryCwd: this.opts.cwd,
     };
     return this.context;
   }
@@ -117,7 +116,7 @@ export class Orc {
 
   async resume(runId: string, wait = false): Promise<OrcRun> {
     const ctx = await this.ctx();
-    await resumeOp.handler({ runId, wait }, ctx);
+    await resumeOp.handler(resumeOp.input.parse({ runId, wait }), ctx);
     return new OrcRun(this, runId);
   }
 

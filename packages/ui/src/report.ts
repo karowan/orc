@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { readManifest, readTraces, runPaths } from "@orc/core/src/rundir.js";
+import { readJournal, readManifest, readTraces, runPaths } from "@orc/core/src/rundir.js";
 import { statusForRun } from "@orc/core/src/status.js";
 import { renderReportHtml } from "./render.js";
 
@@ -10,9 +10,10 @@ import { renderReportHtml } from "./render.js";
  */
 export function writeReport(runId: string): string {
   const manifest = readManifest(runId);
+  const journal = readJournal(runId);
   const traces = readTraces(runId);
   const status = statusForRun(runId);
-  const html = renderReportHtml({ manifest, status, traces, live: status.state === "running" });
+  const html = renderReportHtml({ manifest, status, traces, journal, live: status.state === "running" });
   const target = runPaths(runId).report;
   const tmp = `${target}.tmp`;
   fs.writeFileSync(tmp, html);

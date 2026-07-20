@@ -1,4 +1,4 @@
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { Proc, SpawnOptions } from "@orc/core/src/contracts.js";
 import { LocalExecutor } from "../src/local.js";
@@ -50,20 +50,34 @@ describe("SshExecutor command construction", () => {
   it("wraps commands in ssh + login shell with BatchMode", () => {
     const ssh = new SshExecutor("frank", { spawnImpl: fakeSpawner().spawnImpl });
     const argv = ssh.sshArgv(["echo", "hello world"]);
-    expect(argv.slice(0, 4)).toEqual(["ssh", "-o", "BatchMode=yes", "frank"]);
-    expect(argv.slice(4, 6)).toEqual(["zsh", "-lc"]);
+    expect(argv.slice(0, 6)).toEqual(["ssh", "-o", "BatchMode=yes", "-T", "--", "frank"]);
+    expect(argv.slice(6, 8)).toEqual(["zsh", "-lc"]);
     // The zsh -lc payload is quoted once more for the remote login shell's
     // outer parse; unwrapping one layer must yield the exec line.
-    expect(argv).toHaveLength(7);
-    expect(argv[6]).toBe(shQuote(`exec echo 'hello world'`));
+    expect(argv).toHaveLength(9);
+    expect(argv.at(-1)).toBe(shQuote(`exec 'echo' 'hello world'`));
+  });
+
+  it.each([
+    `-oProxyCommand=sh -c "echo injected"`,
+    "host\n-oProxyCommand=bad",
+    "host\u0000bad",
+    "host\u007fbad",
+    "host\u0085bad",
+  ])("rejects an option-like or control-character destination: %j", (destination) => {
+    expect(() => new SshExecutor(destination)).toThrow("SshExecutor: invalid destination");
   });
 
   it("builds cd-prefixed remote commands with escaping", () => {
     const ssh = new SshExecutor("user@host", { spawnImpl: fakeSpawner().spawnImpl });
-    expect(ssh.remoteCommand(["ls", "-la"], "/tmp/o dir")).toBe(`cd '/tmp/o dir' && exec ls -la`);
-    expect(ssh.remoteCommand(["printf", "%s", "a'b"])).toBe(`exec printf %s 'a'\\''b'`);
+    expect(ssh.remoteCommand(["ls", "-la"], "/tmp/o dir")).toBe(
+      `cd '/tmp/o dir' && exec 'ls' '-la'`,
+    );
+    expect(ssh.remoteCommand(["printf", "%s", "a'b"])).toBe(
+      `exec 'printf' '%s' 'a'\\''b'`,
+    );
     expect(ssh.remoteCommand(["run"], undefined, { KEY: "v al$ue" })).toBe(
-      `exec env 'KEY=v al$ue' run`,
+      `exec 'env' 'KEY=v al$ue' 'run'`,
     );
   });
 
@@ -73,7 +87,7 @@ describe("SshExecutor command construction", () => {
     ssh.spawn(["ls"], { cwd: "/work", env: { A: "1" } });
     expect(fake.calls).toHaveLength(1);
     const { cmd, opts } = fake.calls[0];
-    expect(cmd[6]).toBe(shQuote("cd /work && exec env A=1 ls"));
+    expect(cmd.at(-1)).toBe(shQuote("cd '/work' && exec 'env' 'A=1' 'ls'"));
     expect(opts?.cwd).toBeUndefined();
     expect(opts?.env).toBeUndefined();
   });
@@ -89,7 +103,7 @@ describe("SshExecutor command construction", () => {
     const ok = fakeSpawner({ code: 0, stdout: "contents\n" });
     const ssh = new SshExecutor("frank", { spawnImpl: ok.spawnImpl });
     expect(await ssh.readFile("/tmp/x")).toBe("contents\n");
-    expect(ok.calls[0].cmd[6]).toBe(shQuote("exec cat /tmp/x"));
+    expect(ok.calls[0].cmd.at(-1)).toBe(shQuote("exec 'cat' '/tmp/x'"));
 
     const bad = fakeSpawner({ code: 1, stderr: "cat: /tmp/x: No such file" });
     const sshBad = new SshExecutor("frank", { spawnImpl: bad.spawnImpl });
@@ -102,8 +116,60 @@ describe("SshExecutor command construction", () => {
     await ssh.writeFile("/tmp/out file", "payload\nwith 'quotes'\n");
     expect(fake.calls).toHaveLength(1);
     const innerRedirect = `cat > ${shQuote("/tmp/out file")}`;
-    expect(fake.calls[0].cmd[6]).toBe(shQuote(`exec sh -c ${shQuote(innerRedirect)}`));
+    expect(fake.calls[0].cmd.at(-1)).toBe(
+      shQuote(ssh.remoteCommand(["sh", "-c", innerRedirect])),
+    );
     expect(fake.calls[0].stdinData).toBe("payload\nwith 'quotes'\n");
+  });
+
+  it("writeFile reports stdin EPIPE after draining remote stderr", async () => {
+    let resolveExit!: (code: number) => void;
+    let killed = 0;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+    const spawnImpl = (): Proc => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const stdin = new Writable({
+        write(_chunk, _encoding, callback) {
+          callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+          setImmediate(() => {
+            stdout.end();
+            stderr.end("remote cat failed");
+            resolveExit(1);
+          });
+        },
+      });
+      return { stdin, stdout, stderr, exited, kill: () => { killed++; }, pid: 12345 };
+    };
+    const ssh = new SshExecutor("frank", { spawnImpl });
+
+    await expect(ssh.writeFile("/tmp/out", "payload")).rejects.toThrow(
+      /remote cat failed; stdin: write EPIPE/,
+    );
+    expect(killed).toBe(0);
+  });
+
+  it("run reports remote stderr stream errors", async () => {
+    const spawnImpl = (): Proc => {
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const exited = new Promise<number>((resolve) => {
+        stdin.once("finish", () => {
+          setImmediate(() => {
+            stdout.end();
+            stderr.destroy(new Error("read EPIPE"));
+            resolve(255);
+          });
+        });
+      });
+      return { stdin, stdout, stderr, exited, kill: () => {}, pid: 12345 };
+    };
+    const ssh = new SshExecutor("frank", { spawnImpl });
+
+    await expect(ssh.run(["true"])).rejects.toThrow(/stderr: read EPIPE/);
   });
 
   it("kill() kills the local ssh process (channel teardown)", async () => {
@@ -120,10 +186,10 @@ describe("SshExecutor command construction", () => {
     // ssh would send, and confirm the nasty string survives both quote layers.
     const local = new LocalExecutor();
     const ssh = new SshExecutor("frank", { spawnImpl: fakeSpawner().spawnImpl });
-    const nasty = `a'b"c$d\`e f\ng`;
+    const nasty = `=ls^a'b"c$d\`e f\ng`;
     const argv = ssh.sshArgv(["printf", "%s", nasty]);
-    const payload = argv.slice(4).join(" "); // zsh -lc '<quoted>'
-    const { code, stdout } = await local.run(["sh", "-c", payload]);
+    const payload = argv.slice(-3).join(" "); // zsh -lc '<quoted>'
+    const { code, stdout } = await local.run(["zsh", "-f", "-c", payload]);
     expect(code).toBe(0);
     expect(stdout).toBe(nasty);
   });

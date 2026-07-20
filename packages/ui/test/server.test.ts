@@ -54,6 +54,12 @@ describe("MonitorServer", () => {
     expect(html).toContain("demo run");
   });
 
+  it("identifies the monitor and its state home on the health endpoint", async () => {
+    const res = await fetch(`${url}/health.json`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ service: "orc-monitor", home });
+  });
+
   it("serves projected status at /runs/:id/state.json", async () => {
     const res = await fetch(`${url}/runs/${run.runId}/state.json`);
     expect(res.status).toBe(200);

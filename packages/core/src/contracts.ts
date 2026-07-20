@@ -106,8 +106,10 @@ export interface LeafRequest {
    * Filesystem confinement for WRITE leaves. Default false: a write leaf is an
    * unconfined subagent that can write wherever the caller can (builds write to
    * caches outside the workspace). When true, writes are confined to `cwd` plus
-   * `sandboxDirs` (override dirs, e.g. cache roots). Read-only leaves are always
-   * write-denied regardless — that's the readOnly contract, not sandboxing.
+   * `sandboxDirs` (override dirs, e.g. cache roots). Read-only leaves deny the
+   * built-in command/file mutation paths regardless — that's the readOnly
+   * contract, not sandboxing. Configured hooks and MCP tools are not disabled,
+   * so this is not a global side-effect sandbox.
    */
   sandbox?: boolean;
   sandboxDirs?: string[];
@@ -202,11 +204,36 @@ export interface CompletionRecord {
   attempt: number;
 }
 
+/** Durable start of one leaf attempt, written before the harness is invoked. */
+export interface AttemptRecord {
+  t: "attempt";
+  seq: number;
+  attempt: number;
+  atMs: number;
+}
+
+/**
+ * Latest cumulative cost reported for one attempt. Multiple records may be
+ * written; replay keeps the last value for each (seq, attempt) pair.
+ */
+export interface CostRecord {
+  t: "cost";
+  seq: number;
+  attempt: number;
+  costUsd: number;
+  costEstimated: boolean;
+  atMs: number;
+}
+
 export interface FinishRecord {
   t: "finish";
   status: "completed" | "failed" | "cancelled";
   resultSha?: string;
   error?: string;
+  /** Number of control records consumed by the ownership epoch that finished. */
+  controlOffset?: number;
+  /** Leaf whose delivered error directly became the program's terminal error. */
+  errorSeq?: number;
 }
 
 /**
@@ -220,7 +247,13 @@ export interface RetryRecord {
   atMs: number;
 }
 
-export type JournalRecord = CallRecord | CompletionRecord | FinishRecord | RetryRecord;
+export type JournalRecord =
+  | CallRecord
+  | AttemptRecord
+  | CostRecord
+  | CompletionRecord
+  | FinishRecord
+  | RetryRecord;
 
 // ---------------------------------------------------------------------------
 // Trace sidecar (Bucket B — non-deterministic detail). Append-only JSONL.
@@ -308,7 +341,7 @@ export interface RunManifest {
   sandboxDirs: string[]; // extra writable roots when sandboxed (cache dirs, etc.)
   maxParallel: number;
   idleTimeoutMs: number | false;
-  /** USD cap: the run is cancelled once its estimated cost exceeds this. */
+  /** Reactive USD cap: the run fails once observed estimated cost exceeds this. */
   budgetUsd?: number;
   defaultHarness: string;
   createdAtMs: number;

@@ -19,7 +19,9 @@
  * - bypass       -> permissionMode "bypassPermissions" + allowDangerouslySkipPermissions
  *
  * Read-only scoping uses disallowedTools (NOT bare allowedTools, which
- * auto-approves before canUseTool — the verified interplay defect).
+ * auto-approves before canUseTool — the verified interplay defect). Inherited
+ * settings and MCP tools are not disabled; side effects from configured hooks
+ * and integrations are outside the narrow direct command/filesystem guarantee.
  */
 import * as path from "node:path";
 import { existsSync } from "node:fs";
@@ -57,6 +59,8 @@ import type {
 } from "@orc/core";
 
 const WRITE_TOOLS = ["Edit", "Write", "NotebookEdit"];
+const READ_ONLY_DISALLOWED_TOOLS = ["Bash", ...WRITE_TOOLS];
+const POST_EXIT_DRAIN_MS = 10_000;
 
 export const claudeHarness: Harness = {
   name: "claude",
@@ -133,42 +137,68 @@ export const claudeHarness: Harness = {
 // Local transport: Agent SDK
 // ---------------------------------------------------------------------------
 async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<HarnessEvent> {
+  if (ctx.signal.aborted) {
+    yield { kind: "error", message: `aborted: ${String(ctx.signal.reason ?? "cancelled")}` };
+    return;
+  }
+
   const abort = new AbortController();
   const onAbort = () => abort.abort(ctx.signal.reason as Error | undefined);
+  ctx.signal.addEventListener("abort", onAbort, { once: true });
   if (ctx.signal.aborted) onAbort();
-  ctx.signal.addEventListener("abort", onAbort);
 
-  const bridgeApprovals = req.approvalMode === "manual" || req.approvalMode === "accept-edits";
-  // Sandbox confines a WRITE leaf's file edits to cwd + sandboxDirs. Read-only
-  // leaves already deny write tools, so sandbox only applies to write leaves.
+  const bridgeApprovals =
+    !req.readOnly && (req.approvalMode === "manual" || req.approvalMode === "accept-edits");
   const sandboxWrites = req.sandbox === true && !req.readOnly;
-  const allowedRoots = [req.cwd, ...(req.sandboxDirs ?? [])];
+  const roots = sandboxRoots(req);
   const permissionMode: PermissionMode =
-    req.approvalMode === "manual"
-      ? "default"
-      : req.approvalMode === "accept-edits"
-        ? "acceptEdits"
-        : req.approvalMode === "bypass"
-          ? "bypassPermissions"
-          : "dontAsk";
+    req.readOnly
+      ? "dontAsk"
+      : sandboxWrites && (req.approvalMode === "auto" || req.approvalMode === "bypass")
+        ? "default"
+        : req.approvalMode === "manual"
+          ? "default"
+          : req.approvalMode === "accept-edits"
+            ? "acceptEdits"
+            : req.approvalMode === "bypass"
+              ? "bypassPermissions"
+              : "dontAsk";
 
-  // Compose a permission callback when we need to bridge approvals AND/OR
-  // enforce the write sandbox. Path-check first (deny out-of-sandbox writes),
-  // then bridge to the operator if the mode asks.
-  const needsCallback = bridgeApprovals || sandboxWrites;
-  const canUseTool = needsCallback
-    ? async (toolName: string, input: Record<string, unknown>) => {
+  const canUseTool = bridgeApprovals || sandboxWrites
+    ? async (
+        toolName: string,
+        input: Record<string, unknown>,
+        permission: { blockedPath?: string },
+      ) => {
         if (sandboxWrites && WRITE_TOOLS.includes(toolName)) {
-          const target = (input.file_path ?? input.notebook_path ?? input.path) as string | undefined;
-          if (target && !pathWithin(target, allowedRoots)) {
+          const target = (input.file_path ?? input.notebook_path ?? input.path) as
+            | string
+            | undefined;
+          const targets = [target, permission.blockedPath].filter(
+            (candidate): candidate is string => typeof candidate === "string",
+          );
+          if (
+            targets.length === 0 ||
+            targets.some((candidate) => !pathWithin(candidate, roots, req.cwd))
+          ) {
             return {
               behavior: "deny" as const,
-              message: `sandbox: ${toolName} to ${target} is outside the allowed roots (${allowedRoots.join(", ")})`,
+              message: `sandbox: ${toolName} target is outside the allowed roots`,
             };
           }
+          if (!bridgeApprovals) {
+            return { behavior: "allow" as const, updatedInput: input };
+          }
         }
-        if (!bridgeApprovals) return { behavior: "allow" as const, updatedInput: input };
-        const decision = await ctx.requestApproval({ runId: req.runId, seq: req.seq, toolName, input: input as Json });
+        if (!bridgeApprovals) {
+          return { behavior: "allow" as const, updatedInput: input };
+        }
+        const decision = await ctx.requestApproval({
+          runId: req.runId,
+          seq: req.seq,
+          toolName,
+          input: input as Json,
+        });
         return decision.behavior === "allow"
           ? { behavior: "allow" as const, updatedInput: input }
           : { behavior: "deny" as const, message: decision.message ?? "denied by operator" };
@@ -184,12 +214,27 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
     abortController: abort,
     permissionMode,
     ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
-    // Explicit on purpose: the omitted-default changed across SDK versions.
-    settingSources: ["user", "project", "local"],
+    // Sandboxed write leaves isolate settings because settings can add writable
+    // roots. Read-only deliberately does not disable configured integrations.
+    settingSources: sandboxWrites ? [] : ["user", "project", "local"],
+    strictMcpConfig: sandboxWrites,
     systemPrompt: { type: "preset", preset: "claude_code", append: req.system },
     maxTurns: 100,
-    ...(req.approvalMode === "bypass" ? { allowDangerouslySkipPermissions: true } : {}),
-    ...(req.readOnly ? { disallowedTools: WRITE_TOOLS } : {}),
+    ...(req.approvalMode === "bypass" && !req.readOnly && !sandboxWrites
+      ? { allowDangerouslySkipPermissions: true }
+      : {}),
+    ...(req.readOnly ? { disallowedTools: READ_ONLY_DISALLOWED_TOOLS } : {}),
+    ...(sandboxWrites
+      ? {
+          additionalDirectories: roots.slice(1),
+          sandbox: {
+            enabled: true,
+            failIfUnavailable: true,
+            allowUnsandboxedCommands: false,
+            filesystem: { allowWrite: roots },
+          },
+        }
+      : {}),
     ...(req.schema ? { outputFormat: { type: "json_schema", schema: req.schema as Record<string, unknown> } } : {}),
     ...(canUseTool ? { canUseTool } : {}),
   };
@@ -282,6 +327,10 @@ function* mapSdkMessage(message: SDKMessage): Iterable<HarnessEvent> {
 // Remote transport: claude CLI over the executor (same stream-json protocol)
 // ---------------------------------------------------------------------------
 async function* invokeRemoteCli(req: LeafRequest, ctx: HarnessContext): AsyncIterable<HarnessEvent> {
+  if (ctx.signal.aborted) {
+    yield { kind: "error", message: `aborted: ${String(ctx.signal.reason ?? "cancelled")}` };
+    return;
+  }
   if (req.approvalMode === "manual" || req.approvalMode === "accept-edits") {
     yield {
       kind: "error",
@@ -291,13 +340,33 @@ async function* invokeRemoteCli(req: LeafRequest, ctx: HarnessContext): AsyncIte
     };
     return;
   }
+
   const args = ["claude", "-p", "--verbose", "--output-format", "stream-json"];
-  if (req.approvalMode === "bypass") {
+  const sandboxWrites = req.sandbox === true && !req.readOnly;
+  if (sandboxWrites) {
+    args.push("--permission-mode", "acceptEdits");
+  } else if (req.approvalMode === "bypass" && !req.readOnly) {
     args.push("--permission-mode", "bypassPermissions", "--dangerously-skip-permissions");
   } else {
     args.push("--permission-mode", "dontAsk");
   }
-  if (req.readOnly) args.push("--disallowedTools", WRITE_TOOLS.join(","));
+  const roots = sandboxRoots(req);
+  if (req.readOnly) args.push("--disallowedTools", READ_ONLY_DISALLOWED_TOOLS.join(","));
+  if (sandboxWrites) args.push("--setting-sources=", "--strict-mcp-config");
+  if (sandboxWrites) {
+    args.push(
+      "--settings",
+      JSON.stringify({
+        sandbox: {
+          enabled: true,
+          failIfUnavailable: true,
+          allowUnsandboxedCommands: false,
+          filesystem: { allowWrite: roots },
+        },
+      }),
+    );
+    for (const root of roots.slice(1)) args.push("--add-dir", root);
+  }
   if (req.model) args.push("--model", req.model);
   if (req.sessionId) args.push("--resume", req.sessionId);
   if (req.system) args.push("--append-system-prompt", req.system);
@@ -305,31 +374,68 @@ async function* invokeRemoteCli(req: LeafRequest, ctx: HarnessContext): AsyncIte
 
   const proc = ctx.executor.spawn(args, { cwd: req.cwd, stdin: "pipe" });
   const onAbort = () => proc.kill();
-  ctx.signal.addEventListener("abort", onAbort);
-  proc.stdin?.end(req.prompt);
+  ctx.signal.addEventListener("abort", onAbort, { once: true });
+  if (ctx.signal.aborted) onAbort();
+  const stderrDone = drainStderr(proc.stderr, ctx.log);
+  const cancelStdoutGuard = guardPostExitDrain(proc.stdout, proc.exited, "stdout", ctx.log);
+  const cancelStderrGuard = guardPostExitDrain(proc.stderr, proc.exited, "stderr", ctx.log);
+
+  let stdinError: Error | undefined;
+  if (!proc.stdin) {
+    ctx.signal.removeEventListener("abort", onAbort);
+    proc.kill();
+    destroyStream(proc.stdout);
+    await stderrDone;
+    cancelStdoutGuard();
+    cancelStderrGuard();
+    yield { kind: "error", message: "remote claude stdin is unavailable" };
+    return;
+  }
+  proc.stdin.on("error", (err: Error) => {
+    stdinError = err;
+    if ((err as NodeJS.ErrnoException).code !== "EPIPE") proc.kill();
+  });
+  try {
+    proc.stdin.end(req.prompt);
+  } catch (err) {
+    stdinError = err instanceof Error ? err : new Error(String(err));
+    proc.kill();
+  }
 
   yield { kind: "model", model: req.model, reasoningEffort: req.reasoningEffort };
   let sawResult = false;
   try {
-    for await (const line of lines(proc.stdout)) {
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue; // non-JSON noise
+    try {
+      for await (const line of lines(proc.stdout)) {
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          continue; // non-JSON noise
+        }
+        for (const ev of mapCliLine(msg)) {
+          if (ev.kind === "result") sawResult = true;
+          yield ev;
+        }
       }
-      for (const ev of mapCliLine(msg)) {
-        if (ev.kind === "result") sawResult = true;
-        yield ev;
-      }
+    } finally {
+      cancelStdoutGuard();
     }
     const code = await proc.exited;
     if (!sawResult) {
-      yield { kind: "error", message: `remote claude exited with code ${code} without a result` };
+      yield {
+        kind: "error",
+        message: stdinError
+          ? `remote claude stdin failed: ${stdinError.message}`
+          : `remote claude exited with code ${code} without a result`,
+      };
     }
   } finally {
     ctx.signal.removeEventListener("abort", onAbort);
     proc.kill();
+    await stderrDone;
+    cancelStdoutGuard();
+    cancelStderrGuard();
   }
 }
 
@@ -387,29 +493,88 @@ function* mapCliLine(msg: Record<string, unknown>): Iterable<HarnessEvent> {
 // ---------------------------------------------------------------------------
 async function* lines(stream: NodeJS.ReadableStream): AsyncIterable<string> {
   let buf = "";
-  for await (const chunk of stream) {
-    buf += chunk.toString();
-    let idx: number;
-    while ((idx = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, idx).trim();
-      buf = buf.slice(idx + 1);
-      if (line) yield line;
+  try {
+    for await (const chunk of stream) {
+      buf += chunk.toString();
+      let idx: number;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (line) yield line;
+      }
     }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ERR_STREAM_PREMATURE_CLOSE") throw err;
   }
   if (buf.trim()) yield buf.trim();
 }
 
-/** True if `target` resolves to a path at or under one of `roots`. */
-export function pathWithin(target: string, roots: string[]): boolean {
-  const norm = (p: string) => {
-    const resolved = path.resolve(p);
-    return resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
-  };
-  const t = norm(target);
-  return roots.some((r) => {
-    const root = norm(r);
-    return t === root || t.startsWith(root);
+function sandboxRoots(req: LeafRequest): string[] {
+  return [
+    ...new Set(
+      [req.cwd, ...(req.sandboxDirs ?? [])].map((root) =>
+        path.normalize(path.isAbsolute(root) ? root : path.resolve(req.cwd, root)),
+      ),
+    ),
+  ];
+}
+
+function pathWithin(target: string, roots: string[], cwd: string): boolean {
+  const candidate = path.resolve(cwd, target);
+  return roots.some((root) => {
+    const rel = path.relative(root, candidate);
+    return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
   });
+}
+
+function guardPostExitDrain(
+  stream: NodeJS.ReadableStream,
+  exited: Promise<number>,
+  name: string,
+  log: (message: string) => void,
+): () => void {
+  let cancelled = false;
+  let timer: NodeJS.Timeout | undefined;
+  void exited.then(() => {
+    if (cancelled) return;
+    timer = setTimeout(() => {
+      log(`remote claude ${name} remained open after exit; stopping drain`);
+      destroyStream(stream);
+    }, POST_EXIT_DRAIN_MS);
+    timer.unref?.();
+  });
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+function destroyStream(stream: NodeJS.ReadableStream): void {
+  (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+}
+
+async function drainStderr(
+  stream: NodeJS.ReadableStream,
+  log: (message: string) => void,
+): Promise<void> {
+  let buf = "";
+  try {
+    for await (const chunk of stream) {
+      buf += chunk.toString();
+      let idx: number;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (line) log(line);
+      }
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ERR_STREAM_PREMATURE_CLOSE") {
+      log(`remote claude stderr read failed: ${String(err)}`);
+    }
+  } finally {
+    if (buf.trim()) log(buf.trim());
+  }
 }
 
 /** Normalize a tool_result content field into a bounded string for the trace. */

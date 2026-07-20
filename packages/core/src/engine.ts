@@ -206,6 +206,69 @@ const INVOKE = String.raw`
 })();
 `;
 
+const STRICT_JSON_SERIALIZER = String.raw`
+(function () {
+  var isArray = Array.isArray;
+  var getPrototypeOf = Object.getPrototypeOf;
+  var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  var keys = Object.keys;
+  var objectPrototype = Object.prototype;
+  var stringify = JSON.stringify;
+  var isFiniteNumber = Number.isFinite;
+
+  function encode(value, depth, ancestors) {
+    if (depth > 256) throw new TypeError("JSON nesting exceeds 256");
+    if (value === null || typeof value === "boolean" || typeof value === "string") {
+      return stringify(value);
+    }
+    if (typeof value === "number") {
+      if (!isFiniteNumber(value)) throw new TypeError("JSON numbers must be finite");
+      return stringify(value);
+    }
+    if (typeof value !== "object") {
+      throw new TypeError("unsupported JSON value: " + typeof value);
+    }
+    for (var a = 0; a < ancestors.length; a++) {
+      if (ancestors[a] === value) throw new TypeError("JSON value contains a cycle");
+    }
+    ancestors[ancestors.length] = value;
+    try {
+      var out = "";
+      var i;
+      if (isArray(value)) {
+        out = "[";
+        for (i = 0; i < value.length; i++) {
+          var item = getOwnPropertyDescriptor(value, i);
+          if (!item) throw new TypeError("JSON arrays cannot be sparse");
+          if (!("value" in item)) throw new TypeError("JSON properties cannot be accessors");
+          if (i) out += ",";
+          out += encode(item.value, depth + 1, ancestors);
+        }
+        return out + "]";
+      }
+      var prototype = getPrototypeOf(value);
+      if (prototype !== objectPrototype && prototype !== null) {
+        throw new TypeError("JSON objects must be plain objects");
+      }
+      var names = keys(value);
+      out = "{";
+      for (i = 0; i < names.length; i++) {
+        var name = names[i];
+        var property = getOwnPropertyDescriptor(value, name);
+        if (!("value" in property)) throw new TypeError("JSON properties cannot be accessors");
+        if (i) out += ",";
+        out += stringify(name) + ":" + encode(property.value, depth + 1, ancestors);
+      }
+      return out + "}";
+    } finally {
+      ancestors.length -= 1;
+    }
+  }
+
+  return function (value) { return encode(value, 0, []); };
+})()
+`;
+
 export class ProgramVM {
   private runtime: QuickJSRuntime;
   private ctx: QuickJSContext;
@@ -214,6 +277,8 @@ export class ProgramVM {
   private stepsRemaining = 0;
   private interrupted = false;
   private disposed = false;
+  private jsonParse?: QuickJSHandle;
+  private jsonSerialize?: QuickJSHandle;
 
   private constructor(
     runtime: QuickJSRuntime,
@@ -228,27 +293,51 @@ export class ProgramVM {
   static async create(bundle: string, policy: Policy, hooks: VmHooks, startSeq = 0): Promise<ProgramVM> {
     const QuickJS = await getQuickJS();
     const runtime = QuickJS.newRuntime();
-    runtime.setMemoryLimit(policy.memoryLimitBytes);
-    runtime.setMaxStackSize(policy.maxStackBytes);
-    const ctx = runtime.newContext();
-    const vm = new ProgramVM(runtime, ctx, policy, hooks);
-    vm.nextSeq = startSeq;
-
-    runtime.setInterruptHandler(() => {
-      vm.stepsRemaining -= 1;
-      if (vm.stepsRemaining < 0) {
-        vm.interrupted = true;
-        return true;
+    let vm: ProgramVM | undefined;
+    try {
+      runtime.setMemoryLimit(policy.memoryLimitBytes);
+      runtime.setMaxStackSize(policy.maxStackBytes);
+      const ctx = runtime.newContext();
+      vm = new ProgramVM(runtime, ctx, policy, hooks);
+      vm.nextSeq = startSeq;
+      const json = ctx.getProp(ctx.global, "JSON");
+      try {
+        // Keep the intrinsic handle outside the program's reach. Sandbox code
+        // may replace globalThis.JSON.parse, but replay materialization must
+        // still use the original parser.
+        vm.jsonParse = ctx.getProp(json, "parse");
+      } finally {
+        json.dispose();
       }
-      return false;
-    });
 
-    vm.installHostFunctions();
-    vm.evalOrThrow(BOOTSTRAP, "orc-bootstrap.js");
-    vm.evalOrThrow(bundle, "program.bundle.js");
-    vm.evalOrThrow(INVOKE, "orc-invoke.js");
-    vm.drain(); // initial turn: run the program to its first quiescent point
-    return vm;
+      const serializer = ctx.evalCode(STRICT_JSON_SERIALIZER, "orc-json.js");
+      if ("error" in serializer && serializer.error) {
+        const err = ctx.dump(serializer.error);
+        serializer.error.dispose();
+        throw new Error(`failed to install JSON serializer: ${String(err)}`);
+      }
+      vm.jsonSerialize = serializer.value;
+
+      runtime.setInterruptHandler(() => {
+        vm!.stepsRemaining -= 1;
+        if (vm!.stepsRemaining < 0) {
+          vm!.interrupted = true;
+          return true;
+        }
+        return false;
+      });
+
+      vm.installHostFunctions();
+      vm.evalOrThrow(BOOTSTRAP, "orc-bootstrap.js");
+      vm.evalOrThrow(bundle, "program.bundle.js");
+      vm.evalOrThrow(INVOKE, "orc-invoke.js");
+      vm.drain(); // initial turn: run the program to its first quiescent point
+      return vm;
+    } catch (err) {
+      if (vm) vm.dispose();
+      else runtime.dispose();
+      throw err;
+    }
   }
 
   private installHostFunctions(): void {
@@ -324,29 +413,30 @@ export class ProgramVM {
     const deferred = this.deferreds.get(seq);
     if (!deferred) throw new Error(`no pending call with seq ${seq}`);
     this.deferreds.delete(seq);
+    this.resetBudget();
     if (outcome.status === "ok") {
-      const literal = `(${canonicalJson(outcome.value)})`;
-      const parsed = this.ctx.evalCode(literal, `orc-result-${seq}.js`);
+      const bytes = canonicalJson(outcome.value);
+      const source = this.ctx.newString(bytes);
+      const parsed = this.ctx.callFunction(this.jsonParse!, this.ctx.undefined, source);
+      source.dispose();
       if ("error" in parsed && parsed.error) {
         const err = this.ctx.dump(parsed.error);
         parsed.error.dispose();
         deferred.dispose();
+        if (this.interrupted) {
+          throw new PolicyError(`step budget exceeded materializing result for call ${seq}`);
+        }
         throw new Error(`failed to materialize result for seq ${seq}: ${JSON.stringify(err)}`);
       }
       deferred.resolve(parsed.value);
       parsed.value.dispose();
     } else {
-      const literal = `(new Error(${JSON.stringify(outcome.error)}))`;
-      const parsed = this.ctx.evalCode(literal, `orc-error-${seq}.js`);
-      if ("error" in parsed && parsed.error) {
-        parsed.error.dispose();
-        deferred.dispose();
-        throw new Error(`failed to materialize error for seq ${seq}`);
-      }
-      deferred.reject(parsed.value);
-      parsed.value.dispose();
+      const error = this.ctx.newError(outcome.error);
+      deferred.reject(error);
+      error.dispose();
     }
     deferred.dispose(); // frees the deferred's resolve/reject/handle
+    if (this.interrupted) throw new PolicyError(`step budget exceeded materializing result for call ${seq}`);
     this.drain();
   }
 
@@ -356,14 +446,30 @@ export class ProgramVM {
   }
 
   state(): ProgramState {
-    const stateRes = this.ctx.evalCode("globalThis.__orc_state");
-    const state = this.ctx.dump(this.ctx.unwrapResult(stateRes)) as string;
+    const stateHandle = this.ctx.getProp(this.ctx.global, "__orc_state");
+    const state = this.ctx.dump(stateHandle) as string;
+    stateHandle.dispose();
     if (state === "pending") return { state: "pending" };
-    const resultRes = this.ctx.evalCode("globalThis.__orc_result");
-    const handle = this.ctx.unwrapResult(resultRes);
-    const value = this.ctx.dump(handle) as Json;
+    const handle = this.ctx.getProp(this.ctx.global, "__orc_result");
+    if (state === "ok") {
+      this.resetBudget();
+      const serialized = this.ctx.callFunction(this.jsonSerialize!, this.ctx.undefined, handle);
+      handle.dispose();
+      if ("error" in serialized && serialized.error) {
+        const err = this.ctx.dump(serialized.error) as { message?: unknown };
+        serialized.error.dispose();
+        return {
+          state: "error",
+          error: `program result is not valid JSON: ${String(err?.message ?? err)}`,
+        };
+      }
+      const json = this.ctx.getString(serialized.value);
+      serialized.value.dispose();
+      if (this.interrupted) return { state: "error", error: "step budget exceeded materializing program result" };
+      return { state: "ok", result: JSON.parse(json) as Json };
+    }
+    const value = this.ctx.dump(handle);
     handle.dispose();
-    if (state === "ok") return { state: "ok", result: value ?? null };
     return { state: "error", error: String(value) };
   }
 
@@ -380,6 +486,8 @@ export class ProgramVM {
       }
     }
     this.deferreds.clear();
+    this.jsonParse?.dispose();
+    this.jsonSerialize?.dispose();
     try {
       this.ctx.dispose();
     } catch {

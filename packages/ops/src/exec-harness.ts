@@ -5,7 +5,23 @@
  * Registered ONLY via orc.config — never discovered from PATH.
  */
 import * as path from "node:path";
+import { z } from "zod";
 import type { Harness, HarnessCapabilities, HarnessContext, HarnessEvent, LeafRequest } from "@orc/core";
+
+const HarnessCapabilitiesSchema = z.object({
+  available: z.boolean(),
+  version: z.string().optional(),
+  models: z.array(z.object({
+    id: z.string(),
+    displayName: z.string().optional(),
+    reasoningEfforts: z.array(z.string()),
+    default: z.boolean().optional(),
+  })),
+  approvalModes: z.array(z.enum(["manual", "accept-edits", "auto", "bypass"])),
+  structuredOutput: z.boolean(),
+  sessions: z.boolean(),
+  detail: z.string().optional(),
+});
 
 export function makeExecHarness(execPath: string, name?: string): Harness {
   const harnessName = name ?? path.basename(execPath).replace(/\.[^.]+$/, "");
@@ -15,7 +31,7 @@ export function makeExecHarness(execPath: string, name?: string): Harness {
       try {
         const res = await executor.run([execPath, "--capabilities"], { timeoutMs: 15_000 });
         if (res.code !== 0) throw new Error(res.stderr || `exit ${res.code}`);
-        return JSON.parse(res.stdout) as HarnessCapabilities;
+        return HarnessCapabilitiesSchema.parse(JSON.parse(res.stdout));
       } catch (err) {
         return {
           available: false,

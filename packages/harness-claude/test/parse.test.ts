@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractJson, pathWithin } from "../src/index.js";
+import { extractJson } from "../src/index.js";
 
 describe("extractJson", () => {
   it("parses clean JSON", () => {
@@ -13,24 +13,5 @@ describe("extractJson", () => {
   });
   it("handles nested braces in strings", () => {
     expect(extractJson('x {"s":"has } brace","n":1}')).toEqual({ s: "has } brace", n: 1 });
-  });
-});
-
-describe("pathWithin (write sandbox confinement)", () => {
-  const roots = ["/srv/repo", "/home/u/.cache"];
-  it("allows paths at or under an allowed root", () => {
-    expect(pathWithin("/srv/repo/src/a.ts", roots)).toBe(true);
-    expect(pathWithin("/srv/repo", roots)).toBe(true);
-    expect(pathWithin("/home/u/.cache/go/build", roots)).toBe(true);
-  });
-  it("denies paths outside every root", () => {
-    expect(pathWithin("/etc/passwd", roots)).toBe(false);
-    expect(pathWithin("/home/u/.ssh/config", roots)).toBe(false);
-    // prefix trickery: /srv/repo-evil must NOT match /srv/repo
-    expect(pathWithin("/srv/repo-evil/x", roots)).toBe(false);
-  });
-  it("resolves relative and .. traversal before checking", () => {
-    expect(pathWithin("/srv/repo/../repo/ok.ts", roots)).toBe(true);
-    expect(pathWithin("/srv/repo/../../etc/x", roots)).toBe(false);
   });
 });

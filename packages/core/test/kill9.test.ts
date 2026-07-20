@@ -50,7 +50,7 @@ describe("kill -9 resume", () => {
     expect(journalAfterKill.some((r) => r.t === "finish")).toBe(false); // died mid-run
     expect(settledBeforeKill.length).toBeGreaterThan(0); // and not before doing work
 
-    // The dead child's supervisor.lock is stale; resume must take over.
+    // SIGKILL closes the holder pipe, so the kernel lock is released.
     const resumed = await superviseRun(
       manifest.runId,
       makeRegistry(makeFakeHarness({ invocationLog: log })),

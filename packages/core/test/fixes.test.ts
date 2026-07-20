@@ -3,9 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { prepareRun, superviseRun } from "../src/supervisor.js";
-import { readJournal, readResult, readTraces, runPaths } from "../src/rundir.js";
+import { acquireLock, appendControl, readJournal, readResult, readTraces, runPaths } from "../src/rundir.js";
 import { latestLeafTraces } from "../src/status.js";
 import { validateAgainstSchema } from "../src/jsonschema.js";
+import { DEFAULT_POLICY, type Harness } from "../src/contracts.js";
 import { makeFakeHarness, makeRegistry } from "./helpers/fake.js";
 
 const FIX = (name: string) => path.join(__dirname, "fixtures", name);
@@ -65,6 +66,31 @@ describe("extension inputSchema enforcement", () => {
     expect(status.error).toMatch(/inputSchema/);
     expect(executed).toBe(false); // fail-closed: never ran the extension
   });
+
+  it("treats the boolean false schema as rejecting every payload", async () => {
+    let executed = false;
+    const registry = makeRegistry(makeFakeHarness(), {
+      extensions: new Map([
+        [
+          "lookup",
+          {
+            name: "lookup",
+            readOnly: true,
+            inputSchema: false,
+            execute: async () => {
+              executed = true;
+              return null;
+            },
+          },
+        ],
+      ]),
+    });
+
+    const { status } = await run("ext-bad.orc.ts", registry);
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/inputSchema/);
+    expect(executed).toBe(false);
+  });
 });
 
 describe("read-only leaf retry (supervisor retry table)", () => {
@@ -81,6 +107,8 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     const dones = readJournal(manifest.runId).filter((r) => r.t === "done" && r.seq === 0);
     expect(dones).toHaveLength(1);
     expect(dones[0].t === "done" && dones[0].status).toBe("ok");
+    const starts = readJournal(manifest.runId).filter((r) => r.t === "attempt" && r.seq === 0);
+    expect(starts.map((r) => r.t === "attempt" && r.attempt)).toEqual([1, 2, 3]);
   });
 
   it("gives up after the retry budget is exhausted", async () => {
@@ -107,13 +135,41 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     expect(status.error).toMatch(/budget exceeded: estimated cost ~\$1\.20 passed the \$1\.00 budget/);
     // The cutoff is also narrated in the feed.
     const feed = readTraces(manifest.runId).filter((t) => t.t === "event");
-    expect(JSON.stringify(feed)).toContain("cancelling run");
+    expect(JSON.stringify(feed)).toContain("failing run");
   });
 
   it("a run under its budget completes normally", async () => {
     const registry = makeRegistry(makeFakeHarness({ costPerLeafUsd: 0.6 }));
     const { status } = await run("budget-seq.orc.ts", registry, { budgetUsd: 10 });
     expect(status.state).toBe("completed");
+  });
+
+  it("counts spend from every retry attempt toward the hard budget", async () => {
+    let invocations = 0;
+    const costlyFailure: Harness = {
+      name: "costly",
+      async discover() {
+        return {
+          available: true,
+          models: [],
+          approvalModes: ["auto"],
+          structuredOutput: true,
+          sessions: false,
+        };
+      },
+      async *invoke() {
+        invocations++;
+        yield { kind: "usage", costUsd: 0.6, costEstimated: true };
+        yield { kind: "error", message: "transient failure" };
+      },
+    };
+    const registry = makeRegistry(costlyFailure);
+    const { manifest, status } = await run("retry.orc.ts", registry, { budgetUsd: 1 });
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/budget exceeded.*\$1\.20/);
+    expect(invocations).toBe(2);
+    const costs = readJournal(manifest.runId).filter((r) => r.t === "cost");
+    expect(costs).toHaveLength(2);
   });
 
   it("routes harness stderr to per-leaf hlog records, never the event feed", async () => {
@@ -153,6 +209,177 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     const runs = fs.readFileSync(log, "utf8").trim().split("\n").filter((l) => l.startsWith("0:"));
     expect(runs).toHaveLength(1); // classified non-retryable → tried exactly once
   });
+
+  it("enforces a requested output schema even when the harness does not", async () => {
+    const log = path.join(home, "runtime-schema.log");
+    const registry = makeRegistry(
+      makeFakeHarness({ result: () => ({ n: 1, extra: true }), invocationLog: log }),
+    );
+    const { status } = await run("schema-result.orc.ts", registry);
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/result fails output schema/);
+    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("does not retry a deterministically oversized read-only result", async () => {
+    const log = path.join(home, "oversized-result.log");
+    const registry = makeRegistry(
+      makeFakeHarness({
+        result: () => ({ text: "x".repeat(1_000) }),
+        invocationLog: log,
+      }),
+    );
+    const manifest = await prepareRun(
+      { programPath: FIX("retry.orc.ts"), cwd: home, brief: "b" },
+      registry,
+    );
+    const status = await superviseRun(
+      manifest.runId,
+      registry,
+      {},
+      { ...DEFAULT_POLICY, maxResultBytes: 128 },
+    );
+
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/result exceeds cap/);
+    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+});
+
+describe("supervisor shutdown", () => {
+  it("releases a cancelled run even when an extension ignores abort forever", async () => {
+    let started!: () => void;
+    const invoked = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const registry = makeRegistry(makeFakeHarness(), {
+      extensions: new Map([
+        [
+          "never",
+          {
+            name: "never",
+            readOnly: true,
+            execute: async () => {
+              started();
+              return new Promise<never>(() => undefined);
+            },
+          },
+        ],
+      ]),
+    });
+    const manifest = await prepareRun(
+      { programPath: FIX("never-ext.orc.ts"), cwd: home, brief: "b" },
+      registry,
+    );
+    const running = superviseRun(manifest.runId, registry);
+    await invoked;
+    appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
+
+    let timeout: NodeJS.Timeout | undefined;
+    const status = await Promise.race([
+      running,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("cancel did not release the supervisor")), 3_000);
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+    expect(status.state).toBe("cancelled");
+    const released = await acquireLock(runPaths(manifest.runId));
+    await released.release();
+  });
+
+  it("waits for a write leaf without letting a stuck read-only sibling retain the lock", async () => {
+    let writeStarted!: () => void;
+    let readStarted!: () => void;
+    const writeInvoked = new Promise<void>((resolve) => {
+      writeStarted = resolve;
+    });
+    const readInvoked = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const harness: Harness = {
+      name: "writer",
+      async discover() {
+        return {
+          available: true,
+          models: [],
+          approvalModes: ["auto"],
+          structuredOutput: true,
+          sessions: false,
+        };
+      },
+      async *invoke(_request, context) {
+        writeStarted();
+        await new Promise<void>((resolve) => {
+          context.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("writer stopped");
+      },
+    };
+    const registry = makeRegistry(harness, {
+      extensions: new Map([
+        [
+          "never",
+          {
+            name: "never",
+            readOnly: true,
+            execute: async () => {
+              readStarted();
+              return new Promise<never>(() => undefined);
+            },
+          },
+        ],
+      ]),
+    });
+    const manifest = await prepareRun(
+      {
+        programPath: FIX("mixed-never.orc.ts"),
+        cwd: home,
+        brief: "b",
+        allowWrites: true,
+      },
+      registry,
+    );
+    const running = superviseRun(manifest.runId, registry);
+    await Promise.all([writeInvoked, readInvoked]);
+    appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
+
+    const status = await running;
+    expect(status.state).toBe("cancelled");
+    const released = await acquireLock(runPaths(manifest.runId));
+    await released.release();
+  });
+
+  it("settles an idle read-only extension even when it ignores abort", async () => {
+    const registry = makeRegistry(makeFakeHarness(), {
+      extensions: new Map([
+        [
+          "never",
+          {
+            name: "never",
+            readOnly: true,
+            execute: async () => new Promise<never>(() => undefined),
+          },
+        ],
+      ]),
+    });
+    const manifest = await prepareRun(
+      {
+        programPath: FIX("never-ext.orc.ts"),
+        cwd: home,
+        brief: "b",
+        idleTimeout: 20,
+      },
+      registry,
+    );
+
+    const status = await superviseRun(manifest.runId, registry);
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/idle timeout/);
+    const released = await acquireLock(runPaths(manifest.runId));
+    await released.release();
+  });
 });
 
 describe("jsonschema validator", () => {
@@ -167,13 +394,60 @@ describe("jsonschema validator", () => {
       required: ["name", "status"],
     };
     expect(validateAgainstSchema({ name: "x", status: "a" }, schema)).toBeNull();
-    expect(validateAgainstSchema({ status: "a" }, schema)).toMatch(/missing required property "name"/);
-    expect(validateAgainstSchema({ name: 5, status: "a" }, schema)).toMatch(/expected type string/);
-    expect(validateAgainstSchema({ name: "x", status: "z" }, schema)).toMatch(/not in enum/);
-    expect(validateAgainstSchema({ name: "x", status: "a", tags: ["ok", 3] }, schema)).toMatch(/tags\[1\]/);
+    expect(validateAgainstSchema({ status: "a" }, schema)).toMatch(/required property 'name'/);
+    expect(validateAgainstSchema({ name: 5, status: "a" }, schema)).toMatch(/must be string/);
+    expect(validateAgainstSchema({ name: "x", status: "z" }, schema)).toMatch(/allowed values/);
+    expect(validateAgainstSchema({ name: "x", status: "a", tags: ["ok", 3] }, schema)).toMatch(/tags\/1/);
   });
   it("accepts nullable unions", () => {
     expect(validateAgainstSchema(null, { type: ["string", "null"] })).toBeNull();
     expect(validateAgainstSchema("x", { type: ["string", "null"] })).toBeNull();
+  });
+  it("enforces additionalProperties and draft 2020-12 keywords", () => {
+    expect(
+      validateAgainstSchema(
+        { n: 1, extra: true },
+        {
+          type: "object",
+          properties: { n: { type: "number" } },
+          additionalProperties: false,
+        },
+      ),
+    ).toMatch(/additional properties/);
+    expect(
+      validateAgainstSchema(
+        ["ok", 2],
+        {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "array",
+          prefixItems: [{ type: "string" }, { type: "string" }],
+        },
+      ),
+    ).toMatch(/must be string/);
+  });
+
+  it("accepts explicit draft-07 schemas", () => {
+    const schema = {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "array",
+      items: [{ type: "string" }, { type: "number" }],
+      additionalItems: false,
+    };
+    expect(validateAgainstSchema(["ok", 2], schema)).toBeNull();
+    expect(validateAgainstSchema(["ok", "wrong"], schema)).toMatch(/must be number/);
+  });
+
+  it("allows fresh per-call schemas to reuse the same $id", () => {
+    expect(validateAgainstSchema("ok", { $id: "urn:orc:test", type: "string" })).toBeNull();
+    expect(validateAgainstSchema("ok", { $id: "urn:orc:test", type: "string" })).toBeNull();
+  });
+
+  it("resolves root self-references within a call schema", () => {
+    const schema = {
+      $id: "urn:orc:node",
+      type: "object",
+      properties: { child: { $ref: "urn:orc:node" } },
+    };
+    expect(validateAgainstSchema({ child: {} }, schema)).toBeNull();
   });
 });

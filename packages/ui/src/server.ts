@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type { ControlMessage, LeafTraceRecord, RunEventRecord, TraceRecord } from "@orc/core/src/contracts.js";
-import { appendControl, listRuns, orcHome, readManifest, readTraces, runPaths } from "@orc/core/src/rundir.js";
+import { appendControl, listRuns, orcHome, readJournal, readManifest, readTraces, runPaths } from "@orc/core/src/rundir.js";
 import { statusForRun } from "@orc/core/src/status.js";
 import { renderIndexPage, renderLivePage, renderRunBody } from "./render.js";
 
@@ -162,6 +162,9 @@ export class MonitorServer {
         .filter(Boolean)
         .map((p) => decodeURIComponent(p));
 
+      if (req.method === "GET" && parts.length === 1 && parts[0] === "health.json") {
+        return this.sendJson(res, { service: "orc-monitor", home: orcHome() });
+      }
       if (req.method === "GET" && parts.length === 0) {
         return this.sendHtml(res, renderIndexPage(listRuns()));
       }
@@ -229,8 +232,18 @@ export class MonitorServer {
     }
   }
 
-  private project(runId: string): { manifest: ReturnType<typeof readManifest>; status: ReturnType<typeof statusForRun>; traces: TraceRecord[] } {
-    return { manifest: readManifest(runId), status: statusForRun(runId), traces: readTraces(runId) };
+  private project(runId: string): {
+    manifest: ReturnType<typeof readManifest>;
+    status: ReturnType<typeof statusForRun>;
+    traces: TraceRecord[];
+    journal: ReturnType<typeof readJournal>;
+  } {
+    return {
+      manifest: readManifest(runId),
+      status: statusForRun(runId),
+      traces: readTraces(runId),
+      journal: readJournal(runId),
+    };
   }
 
   // -------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import type { Json } from "@orc/core/src/contracts.js";
+import { validateAgainstSchema } from "@orc/core/src/jsonschema.js";
 
 /**
  * Normalize a JSON Schema for codex `outputSchema`.
@@ -57,6 +58,114 @@ export function normalizeSchema(schema: Json): Json {
 }
 
 /**
+ * Project Codex's strict-schema output back to the caller's schema semantics.
+ * Strict mode represents an omitted optional field as `null`; the original
+ * schema generally expects that key to be absent instead.
+ */
+export function restoreOptionalNulls(value: Json, schema: Json): Json {
+  return restoreNode(value, schema, schema, new Set());
+}
+
+function restoreNode(value: Json, schema: Json, root: Json, refs: Set<string>): Json {
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return value;
+  const s = schema as { [k: string]: Json };
+
+  if (typeof s.$ref === "string" && !refs.has(s.$ref)) {
+    const target = resolveLocalRef(root, s.$ref);
+    if (target !== undefined) {
+      refs.add(s.$ref);
+      value = restoreNode(value, target, root, refs);
+      refs.delete(s.$ref);
+    }
+  }
+
+  if (Array.isArray(value)) {
+    if (s.items !== undefined && !Array.isArray(s.items)) {
+      value = value.map((item) => restoreNode(item, s.items!, root, refs));
+    }
+  } else if (value !== null && typeof value === "object") {
+    const properties =
+      s.properties !== null && typeof s.properties === "object" && !Array.isArray(s.properties)
+        ? (s.properties as { [k: string]: Json })
+        : undefined;
+    if (properties) {
+      const required = new Set(
+        Array.isArray(s.required)
+          ? s.required.filter((key): key is string => typeof key === "string")
+          : [],
+      );
+      const out = { ...value } as { [k: string]: Json };
+      for (const [key, propertySchema] of Object.entries(properties)) {
+        if (!(key in out)) continue;
+        if (
+          out[key] === null &&
+          !required.has(key) &&
+          !acceptsNull(propertySchema, root)
+        ) {
+          delete out[key];
+        } else {
+          out[key] = restoreNode(out[key], propertySchema, root, refs);
+        }
+      }
+      value = out;
+    }
+  }
+
+  if (Array.isArray(s.allOf)) {
+    for (const branch of s.allOf) value = restoreNode(value, branch, root, refs);
+  }
+  const union = Array.isArray(s.anyOf)
+    ? s.anyOf
+    : Array.isArray(s.oneOf)
+      ? s.oneOf
+      : undefined;
+  if (union) {
+    const original = union.find((branch) => matchesSchema(value, branch, root));
+    if (original) return restoreNode(value, original, root, refs);
+    for (const branch of union) {
+      const candidate = restoreNode(value, branch, root, refs);
+      if (matchesSchema(candidate, branch, root)) return candidate;
+    }
+  }
+  return value;
+}
+
+function matchesSchema(value: Json, schema: Json, root: Json): boolean {
+  if (
+    schema === null ||
+    typeof schema !== "object" ||
+    Array.isArray(schema) ||
+    root === null ||
+    typeof root !== "object" ||
+    Array.isArray(root)
+  ) {
+    return validateAgainstSchema(value, schema) === null;
+  }
+  const rootSchema = root as { [k: string]: Json };
+  return (
+    validateAgainstSchema(value, {
+      ...schema,
+      ...("$defs" in rootSchema && !("$defs" in schema) ? { $defs: rootSchema.$defs } : {}),
+      ...("definitions" in rootSchema && !("definitions" in schema)
+        ? { definitions: rootSchema.definitions }
+        : {}),
+    }) === null
+  );
+}
+
+function resolveLocalRef(root: Json, ref: string): Json | undefined {
+  if (ref === "#") return root;
+  if (!ref.startsWith("#/")) return undefined;
+  let node: Json | undefined = root;
+  for (const raw of ref.slice(2).split("/")) {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) return undefined;
+    const key = raw.replace(/~1/g, "/").replace(/~0/g, "~");
+    node = (node as { [k: string]: Json })[key];
+  }
+  return node;
+}
+
+/**
  * Statically flag the parts of a JSON Schema that OpenAI/codex strict output
  * REJECTS and that `normalizeSchema` cannot auto-fix without changing meaning.
  *
@@ -92,19 +201,42 @@ export function lintStrictOutputSchema(schema: Json): string[] {
 
 /** Make a property schema accept null (optional-in-strict-mode). */
 function makeNullable(schema: Json): Json {
+  if (schema === false) return { type: "null" };
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return schema;
   const s = { ...schema } as { [k: string]: Json };
-  const t = s.type;
-  if (typeof t === "string" && t !== "null") {
-    s.type = [t, "null"];
-  } else if (Array.isArray(t) && !t.includes("null")) {
-    s.type = [...t, "null"];
+  if (acceptsNull(s)) return s;
+  return { anyOf: [s, { type: "null" }] };
+}
+
+function acceptsNull(schema: Json, root: Json = schema, seen = new Set<object>()): boolean {
+  if (typeof schema === "boolean") return schema;
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return false;
+  if (seen.has(schema)) return true;
+  seen.add(schema);
+  const s = schema as { [k: string]: Json };
+  let allowed = true;
+
+  if (typeof s.type === "string") allowed &&= s.type === "null";
+  else if (Array.isArray(s.type)) allowed &&= s.type.includes("null");
+  if (Array.isArray(s.enum)) allowed &&= s.enum.includes(null);
+  if ("const" in s) allowed &&= s.const === null;
+  if (typeof s.$ref === "string") {
+    const target = resolveLocalRef(root, s.$ref);
+    allowed &&= target !== undefined && acceptsNull(target, root, seen);
   }
-  // If an enum constrains values, null must be an allowed member too.
-  if (Array.isArray(s.enum) && !s.enum.includes(null)) {
-    s.enum = [...s.enum, null];
+  if (Array.isArray(s.allOf)) {
+    allowed &&= s.allOf.every((branch) => acceptsNull(branch, root, seen));
   }
-  return s;
+  if (Array.isArray(s.anyOf)) {
+    allowed &&= s.anyOf.some((branch) => acceptsNull(branch, root, seen));
+  }
+  if (Array.isArray(s.oneOf)) {
+    allowed &&=
+      s.oneOf.filter((branch) => acceptsNull(branch, root, new Set(seen))).length === 1;
+  }
+  if (s.not !== undefined) allowed &&= !acceptsNull(s.not, root, new Set(seen));
+  seen.delete(schema);
+  return allowed;
 }
 
 /**

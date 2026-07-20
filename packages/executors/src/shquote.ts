@@ -1,15 +1,11 @@
 /**
  * POSIX single-quote shell escaping.
  *
- * Safe for any byte sequence: wraps the string in single quotes and rewrites
- * embedded single quotes as `'\''` (close quote, literal quote, reopen).
- * Plain word-safe strings are returned untouched for readability.
+ * Wraps every string in single quotes and rewrites embedded single quotes as
+ * `'\''` (close quote, literal quote, reopen). Always quoting also prevents
+ * zsh-specific expansion of words such as `=ls` and `a^b`.
  */
-const SAFE_WORD = /^[A-Za-z0-9_/.:=@%^+,-]+$/;
-
 export function shQuote(s: string): string {
-  if (s === "") return "''";
-  if (SAFE_WORD.test(s)) return s;
   return `'${s.replaceAll("'", `'\\''`)}'`;
 }
 

@@ -1,3 +1,4 @@
+import { pipeline } from "node:stream/promises";
 import type { Executor, Proc, SpawnOptions } from "@orc/core/src/contracts.js";
 import { LocalExecutor } from "./local.js";
 import { collectRun } from "./run.js";
@@ -7,7 +8,8 @@ export interface SshExecutorOptions {
   /**
    * Test seam: how to spawn the *local* ssh process. Defaults to a
    * LocalExecutor, whose kill() takes down the local ssh process group,
-   * closing the channel and terminating the remote command.
+   * closing the channel. Remote command termination is best-effort: plain SSH
+   * cannot guarantee that a detached or signal-ignoring remote process stops.
    */
   spawnImpl?: (cmd: string[], opts?: SpawnOptions) => Proc;
   /** Extra ssh CLI options (inserted before the destination). */
@@ -19,7 +21,10 @@ export interface SshExecutorOptions {
  * ~/.ssh/config, agents, and ProxyJump all work for free.
  *
  * Non-interactive ssh gets a bare PATH, so every remote command is wrapped in
- * a login shell: `ssh -o BatchMode=yes <dest> zsh -lc '<escaped command>'`.
+ * a login shell:
+ * `ssh -o BatchMode=yes -T -- <dest> zsh -lc '<escaped command>'`.
+ * Killing a returned Proc tears down the local SSH channel, but cannot
+ * guarantee termination of a detached or signal-ignoring remote process.
  */
 export class SshExecutor implements Executor {
   readonly host: string;
@@ -27,7 +32,14 @@ export class SshExecutor implements Executor {
   private readonly sshOptions: string[];
 
   constructor(destination: string, opts?: SshExecutorOptions) {
-    if (!destination) throw new Error("SshExecutor: empty destination");
+    if (
+      typeof destination !== "string" ||
+      destination.length === 0 ||
+      destination.startsWith("-") ||
+      /\p{Cc}/u.test(destination)
+    ) {
+      throw new Error("SshExecutor: invalid destination");
+    }
     this.host = destination;
     const local = new LocalExecutor();
     this.spawnImpl = opts?.spawnImpl ?? ((cmd, o) => local.spawn(cmd, o));
@@ -55,6 +67,8 @@ export class SshExecutor implements Executor {
       "-o",
       "BatchMode=yes",
       ...this.sshOptions,
+      "-T",
+      "--",
       this.host,
       // The remote login shell splits/reparses this line, so quote the whole
       // zsh -lc payload once more for that outer parse.
@@ -93,16 +107,27 @@ export class SshExecutor implements Executor {
   async writeFile(path: string, data: string): Promise<void> {
     // Pipe the data through stdin into a remote `cat > path`.
     const proc = this.spawn(["sh", "-c", `cat > ${shQuote(path)}`]);
-    let stderr = "";
-    proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", (d: string) => (stderr += d));
-    proc.stdout.resume();
-    if (!proc.stdin) throw new Error("ssh writeFile: stdin unavailable");
-    proc.stdin.write(data);
-    proc.stdin.end();
-    const code = await proc.exited;
-    if (code !== 0) {
-      throw new Error(`ssh ${this.host}: write ${path} failed (${code}): ${stderr.trim()}`);
+    const run = collectRun(proc, { stdin: "ignore" });
+    if (!proc.stdin) {
+      proc.kill();
+      await run.catch(() => undefined);
+      throw new Error("ssh writeFile: stdin unavailable");
+    }
+    const input = pipeline([data], proc.stdin).then(
+      () => undefined,
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== "EPIPE") proc.kill();
+        return error instanceof Error ? error : new Error(String(error));
+      },
+    );
+    const [{ code, stderr }, inputError] = await Promise.all([run, input]);
+    if (code !== 0 || inputError) {
+      const detail = [stderr.trim(), inputError ? `stdin: ${inputError.message}` : ""]
+        .filter(Boolean)
+        .join("; ");
+      throw new Error(
+        `ssh ${this.host}: write ${path} failed (${code})${detail ? `: ${detail}` : ""}`,
+      );
     }
   }
 }

@@ -17,9 +17,11 @@ describe("normalizeSchema", () => {
     expect(norm.required).toEqual(["alpha", "zebra"]);
     const props = norm.properties as Record<string, Record<string, unknown>>;
     expect(Object.keys(props)).toEqual(["alpha", "zebra"]);
-    expect(props.alpha.additionalProperties).toBe(false);
-    // alpha was NOT originally required -> made nullable (type union with null)
-    expect(props.alpha.type).toEqual(["object", "null"]);
+    // alpha was NOT originally required -> its complete normalized schema is
+    // unioned with null, so sibling constraints cannot accidentally reject it.
+    expect(props.alpha).toMatchObject({
+      anyOf: [{ additionalProperties: false, type: "object" }, { type: "null" }],
+    });
     // zebra WAS required -> stays a plain string
     expect(props.zebra.type).toBe("string");
   });
@@ -32,17 +34,77 @@ describe("normalizeSchema", () => {
     }) as Record<string, unknown>;
     const props = norm.properties as Record<string, Record<string, unknown>>;
     expect(norm.required).toEqual(["gap", "need"]);
-    expect(props.gap.type).toEqual(["string", "null"]);
+    expect(props.gap).toEqual({ anyOf: [{ type: "string" }, { type: "null" }] });
   });
 
-  it("adds null to an enum for an optional enum field", () => {
+  it("unions the complete optional enum schema with null", () => {
     const norm = normalizeSchema({
       type: "object",
       properties: { status: { type: "string", enum: ["a", "b"] } },
     }) as Record<string, unknown>;
     const status = (norm.properties as Record<string, Record<string, unknown>>).status;
-    expect(status.type).toEqual(["string", "null"]);
-    expect(status.enum).toEqual(["a", "b", null]);
+    expect(status).toEqual({
+      anyOf: [{ enum: ["a", "b"], type: "string" }, { type: "null" }],
+    });
+  });
+
+  it("does not leave sibling constraints rejecting null", () => {
+    const norm = normalizeSchema({
+      type: "object",
+      properties: { fixed: { type: "string", const: "x" } },
+    }) as Record<string, unknown>;
+    const fixed = (norm.properties as Record<string, Record<string, unknown>>).fixed;
+    expect(fixed).toEqual({
+      anyOf: [{ const: "x", type: "string" }, { type: "null" }],
+    });
+  });
+
+  it("keeps optional combinator and ref fields nullable when strict mode makes them required", () => {
+    const norm = normalizeSchema({
+      type: "object",
+      properties: {
+        any: { anyOf: [{ type: "string" }, { type: "number" }] },
+        one: { oneOf: [{ const: "yes" }, { const: "no" }] },
+        all: { allOf: [{ type: "string" }, { minLength: 1 }] },
+        ref: { $ref: "#/$defs/name" },
+      },
+      $defs: { name: { type: "string" } },
+    }) as Record<string, unknown>;
+    const props = norm.properties as Record<string, Record<string, unknown>>;
+
+    expect(norm.required).toEqual(["all", "any", "one", "ref"]);
+    expect(props.any).toEqual({
+      anyOf: [
+        { anyOf: [{ type: "string" }, { type: "number" }] },
+        { type: "null" },
+      ],
+    });
+    expect(props.one).toEqual({
+      anyOf: [
+        { oneOf: [{ const: "yes" }, { const: "no" }] },
+        { type: "null" },
+      ],
+    });
+    expect(props.all).toEqual({
+      anyOf: [
+        { allOf: [{ type: "string" }, { minLength: 1 }] },
+        { type: "null" },
+      ],
+    });
+    expect(props.ref).toEqual({
+      anyOf: [{ $ref: "#/$defs/name" }, { type: "null" }],
+    });
+  });
+
+  it("does not duplicate an existing null combinator branch", () => {
+    const norm = normalizeSchema({
+      type: "object",
+      properties: {
+        value: { anyOf: [{ type: "string" }, { type: "null" }] },
+      },
+    }) as Record<string, unknown>;
+    const value = (norm.properties as Record<string, Record<string, unknown>>).value;
+    expect(value.anyOf).toEqual([{ type: "string" }, { type: "null" }]);
   });
 
   it("preserves an explicit additionalProperties value", () => {
