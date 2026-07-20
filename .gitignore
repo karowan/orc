@@ -1,6 +1,36 @@
+# dependencies
 node_modules/
+
+# build output
 dist/
-*.tsbuildinfo
-.orc/
 dist-cli/
+*.tsbuildinfo
 *.tgz
+
+# orc runtime state (run journals, traces, reports)
+.orc/
+
+# test artifacts
+coverage/
+.vitest/
+
+# environment / secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# editors
+.idea/
+.vscode/
+*.swp
+
+# local agent settings
+.claude/settings.local.json
