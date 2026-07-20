@@ -1,5 +1,6 @@
 {
   "name": "orc-monorepo",
+  "license": "0BSD",
   "private": true,
   "type": "module",
   "scripts": {
