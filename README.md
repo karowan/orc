@@ -4,7 +4,7 @@ A lightweight TypeScript orchestration runtime.
 Model-authored **promise-native** programs whose `agent()` calls become
 journaled, run-once leaf executions, with deterministic replay/resume, live
 monitoring, per-call SSH-remote working directories, and pluggable harnesses.
-No Temporal, no daemon, no database.
+State is plain per-run files.
 
 ## The idea
 
@@ -19,8 +19,8 @@ const program: Program = async ({ agent, parallel, phase }) => {
     schema: { type: "object", properties: { modules: { type: "array", items: { type: "string" } } }, required: ["modules"] },
   });
 
-  // Completion-time edges are just promises — no graph API. Each module's plan
-  // starts the moment ITS OWN audit finishes, not at a wave barrier.
+  // Completion-time edges are just promises: each module's plan starts the
+  // moment ITS OWN audit finishes.
   const plans = await Promise.all((inventory.modules as string[]).map(async (m) => {
     const findings = await agent(`Audit ${m}`, { id: `audit-${m}` });
     return agent(`Plan remediation for ${m}: ${JSON.stringify(findings)}`, { id: `plan-${m}` });
@@ -35,8 +35,7 @@ export default program;
 ```
 
 The dependency graph *is* the promise structure. Data flows between leaves as
-ordinary values (`JSON.stringify` a result into the next prompt). There is no
-`runGraph` / `task` API and no wave engine.
+ordinary values (`JSON.stringify` a result into the next prompt).
 
 ## Architecture
 
@@ -55,7 +54,7 @@ The canonical rationale, invariants, and accepted tradeoffs live in
 | `@orc/sdk` | Embedded TypeScript SDK (`new Orc().launch(...)`, `run.watch()`), input types via `z.input`; plus `@orc/sdk/program` for authors. |
 | `@orc/ui` | Trace projection → self-contained `report.html` + a live SSE waterfall server. |
 
-## Determinism & durability (no Temporal)
+## Determinism & durability
 
 - **Replay** = re-execute the frozen program, delivering journaled completions in
   recorded order (one per quiescent drain), until it catches up, then continue live.

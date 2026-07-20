@@ -1,5 +1,4 @@
-// Concurrent lanes with completion-time edges + a bounded convergence loop —
-// the shape a wave engine cannot express.
+// Concurrent lanes with completion-time edges + a bounded convergence loop.
 export default async ({ agent, parallel, phase, settle }: any) => {
   const inventory = await agent("list modules", { id: "inventory" });
 

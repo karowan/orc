@@ -1,5 +1,5 @@
 /**
- * MonitorServer — a plain node:http live monitor for orc runs. No frameworks.
+ * MonitorServer — a plain node:http live monitor for orc runs.
  * Binds 127.0.0.1 only; run/approval path segments validated [a-zA-Z0-9_-]+.
  */
 import * as fs from "node:fs";

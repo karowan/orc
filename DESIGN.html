@@ -624,7 +624,7 @@
           <article class="principle">
             <span class="num">P-03</span>
             <h3>One run is one directory</h3>
-            <p>Files, native locks, and content-addressed results replace a daemon and database. A run is inspectable and portable at the user-account boundary.</p>
+            <p>Files, native locks, and content-addressed results carry all run state. A run is inspectable and portable at the user-account boundary.</p>
           </article>
           <article class="principle">
             <span class="num">P-04</span>
@@ -1237,7 +1237,7 @@ export default program;</code></pre>
           <article class="decision">
             <div class="decision-id">D-01</div>
             <div class="decision-body">
-              <h3>Use promise structure instead of a graph API</h3>
+              <h3>Express orchestration as promise structure</h3>
               <div class="decision-grid">
                 <div><b>Why</b>Async TypeScript already expresses dependencies, joins, branches, and failure handling.</div>
                 <div><b>Cost</b>The complete future graph is not statically visible; validation can preview only the first frontier.</div>
@@ -1261,7 +1261,7 @@ export default program;</code></pre>
           <article class="decision">
             <div class="decision-id">D-03</div>
             <div class="decision-body">
-              <h3>Use per-run files instead of a daemon or database</h3>
+              <h3>Persist each run as plain per-run files</h3>
               <div class="decision-grid">
                 <div><b>Why</b>Single-user local operation needs persistence and inspection, not infrastructure.</div>
                 <div><b>Cost</b>No distributed ownership, transactional query engine, or multi-host control plane.</div>
