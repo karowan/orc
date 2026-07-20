@@ -88,7 +88,7 @@ describe("MonitorServer", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("agent#1");
-    expect(html).toContain("1 GATE OPEN");
+    expect(html).toContain('class="gate-count">1 GATE<');
     expect(html).not.toContain("<!doctype");
   });
 

@@ -30,8 +30,8 @@ describe("writeReport", () => {
     const html = fs.readFileSync(reportPath, "utf8");
     expect(html).toContain("r_report_run1");
     expect(html).toContain("agent#1");
-    expect(html).toContain("1 GATE OPEN"); // header gate counter, not a banner
-    expect(html).toContain("supervisor started"); // the run's event feed
+    expect(html).toContain('class="gate-count">1 GATE<'); // header gate counter, not a banner
+    expect(html).toContain("GATE <b>Bash</b> · agent#2"); // latest event in the glance line
     expect(html).not.toContain(XSS_PROMPT); // the unselected report never inlines prompts
     // no stray tmp file left behind
     expect(fs.existsSync(reportPath + ".tmp")).toBe(false);

@@ -17,20 +17,45 @@ function fixture(opts: { settled?: boolean } = {}) {
   return { manifest, status, traces };
 }
 
-describe("renderReportHtml (terminal-ops design)", () => {
-  it("renders the header: run id, name, state chip, meta, and gate counter (not a banner)", () => {
+describe("renderReportHtml (responsive design)", () => {
+  it("renders the glance header: run id, name, state chip, stat tiles, gate counter", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: true });
     expect(html).toContain("r_demo_abc123");
     expect(html).toContain("demo run");
     expect(html).toContain('class="chip running"');
+    // meta line (≥1200px): approval mode + writes + started
     expect(html).toContain("approval <b>manual</b>");
     expect(html).toContain("granted"); // writes granted
     expect(html).toContain("started ");
-    expect(html).toContain("elapsed ");
+    // stat tiles: leaves done/total, elapsed, cost, gates
+    expect(html).toMatch(/class="g-nv tnum">2\/3<\/span><span class="g-nk">leaves/);
+    expect(html).toMatch(/data-elapsed-start="\d+"/);
+    expect(html).toContain('class="g-nk">elapsed');
+    expect(html).toMatch(/class="g-nv tnum gated">1<\/span><span class="g-nk">gates/);
     // the banner is gone; a compact gate COUNTER lives in the header
-    expect(html).toContain("1 GATE OPEN");
+    expect(html).toContain('class="gate-count">1 GATE<');
     expect(html).not.toContain("pending approval"); // old banner copy removed
+  });
+
+  it("renders the segmented run bar with one segment per leaf", () => {
+    const { manifest, status, traces } = fixture();
+    const html = renderReportHtml({ manifest, status, traces, live: true });
+    const segs = html.match(/class="g-seg[^"]*"/g) ?? [];
+    expect(segs.length).toBe(status.leaves.length);
+    expect(html).toContain('class="g-seg ok"');
+    expect(html).toContain('class="g-seg gated"'); // gated running leaf
+    expect(html).toContain('class="g-seg error"');
+  });
+
+  it("shows the latest feed event as a single glance line (no feed pane)", () => {
+    const { manifest, status, traces } = fixture();
+    const html = renderReportHtml({ manifest, status, traces, live: true });
+    expect(html).toContain('class="g-last"');
+    // the newest event in the fixture is the approval request
+    expect(html).toContain("GATE <b>Bash</b> · agent#2");
+    expect(html).not.toContain('class="feed"');
+    expect(html).not.toContain('class="feed-scroll"');
   });
 
   it("includes meta refresh only when live", () => {
@@ -44,35 +69,39 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(snapshot).toContain('class="chip completed"');
   });
 
-  it("renders each pending approval as a GATE strip under its leaf row", () => {
+  it("renders each pending approval as an inline strip under its leaf row plus the mobile dock", () => {
     const { manifest, status, traces } = fixture();
     expect(status.approvalsPending).toBe(1);
     const html = renderReportHtml({ manifest, status, traces, live: true });
-    // the gate strip is attached to the gated leaf's row (seq 2), not a top banner
-    expect(html).toMatch(/class="strip" data-approval="appr_1"/);
+    // the inline gate strip is attached to the gated leaf's row (seq 2)
+    expect(html).toMatch(/class="strip-inline" data-approval="appr_1"/);
     expect(html).toContain('class="gate-tag">GATE');
     expect(html).toContain("Bash");
     expect(html).toContain("rm -rf ./dist");
+    // small screens get the bottom dock for the same approval
+    expect(html).toMatch(/class="dock" data-approval="appr_1"/);
+    expect(html).toContain("agent#2 · Bash");
+    expect(html).toContain("write leaf on @build@ci-box");
     // static page: the note, no working buttons
     expect(html).toContain("orc approvals");
     expect(html).not.toContain("orcApprove(");
-    // the gated row gets the amber bar + hatch + diamond treatment
+    // the gated row gets the amber bar + hatch + diamond treatment + GATE tag
     expect(html).toContain('class="bar amber"');
     expect(html).toContain('class="hatch"');
     expect(html).toContain('class="diamond"');
-    expect(html).toContain('class="row gated"');
+    expect(html).toContain('class="c-row gated"');
   });
 
   it("escapes HTML in prompts and never emits script tags in the static report", () => {
     const { manifest, status, traces } = fixture();
-    // Select the leaf whose prompt carries the XSS payload so it renders in the drawer.
+    // Select the leaf whose prompt carries the XSS payload so it renders in the detail view.
     const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>");
   });
 
-  it("renders waterfall rows: bars, phase headers, model + effort, status dots", () => {
+  it("renders phase cards: header with counts + mini track, rows with bars, model, effort, dots", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: true });
     expect(html).toContain("agent#1");
@@ -81,8 +110,12 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(html).toMatch(/class="bar ok" data-s="\d+" data-e="\d*" style="left:[\d.]+%;width:[\d.]+%"/);
     expect(html).toMatch(/class="bar error" data-s="\d+" data-e="\d*" style="left:[\d.]+%;width:[\d.]+%"/);
     expect(html).toMatch(/class="waterfall" data-range-start="\d+" data-running="1"/);
-    expect(html).toContain('class="phase-hdr">plan · 1 leaf');
-    expect(html).toContain('class="phase-hdr">build · 2 leaves');
+    // collapsible phase cards with done/total counters
+    expect(html).toContain('data-key="phase-plan"');
+    expect(html).toContain('data-key="phase-build"');
+    expect(html).toMatch(/class="c-pn">plan<\/span><span class="c-pc tnum">1\/1</);
+    expect(html).toMatch(/class="c-pn">build<\/span><span class="c-pc tnum">1\/2</);
+    expect(html).toContain('class="chev"');
     // model shown in the row (shortened form) + effort pill
     expect(html).toContain("fable-5");
     expect(html).toMatch(/class="eff high"[^>]*>high</);
@@ -92,14 +125,15 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(html).toContain("build@ci-box");
   });
 
-  it("report shows the header cost rollup but no endless bottom detail stack", () => {
+  it("report shows the cost tile but no endless bottom detail stack", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: true });
-    // The stacked per-leaf detail is gone; the right drawer is the detail home.
+    // The stacked per-leaf detail is gone; the detail view is the detail home.
     expect(html).not.toContain('class="static-detail"');
     expect(html).not.toContain("lane-block");
-    // Header-level summaries stay.
-    expect(html).toContain("~$0.13 (incl. est)"); // header cost rollup
+    // Header-level cost tile stays (mixed exact + estimated).
+    expect(html).toContain(">~$0.13</span>");
+    expect(html).toContain('class="g-nk">cost<');
   });
 
   it("uses durable spend from every retry attempt without double-counting revisions", () => {
@@ -113,14 +147,15 @@ describe("renderReportHtml (terminal-ops design)", () => {
     const html = renderReportHtml({ manifest, status, traces, journal, live: true });
     // attempt 1 ($0.1234) + latest durable attempt 2 cost ($0.25) +
     // estimated failed leaf ($0.0075) = $0.3809.
-    expect(html).toContain("~$0.38 (incl. est)");
+    expect(html).toContain(">~$0.38</span>");
   });
 
-  it("surfaces a leaf's full record through the drawer (output, tools, usage)", () => {
+  it("surfaces a leaf's full record through the detail view (output, tools, usage)", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
-    expect(html).toContain('class="drawer"');
-    expect(html).toContain('class="dw-scroll"'); // drawer body scrolls itself
+    expect(html).toContain('class="detail"');
+    expect(html).toContain('class="d-back"'); // back header (mobile) / drawer top (desktop)
+    expect(html).toContain('class="dw-scroll"'); // detail body scrolls itself
     expect(html).toContain("claude-fable-5"); // full model in the runtime line
     expect(html).toContain("&quot;summary&quot;: &quot;planned&quot;"); // output json
     expect(html).toContain("Read");
@@ -132,40 +167,30 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(html).toContain("$0.12"); // claude exact
   });
 
-  it("shows a failed leaf's error and estimated cost in its drawer", () => {
+  it("shows a failed leaf's error and estimated cost in its detail view", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 3 });
     expect(html).toContain("leaf exploded"); // error
     expect(html).toContain("~$0.01"); // codex estimated
   });
 
-  it("renders the feed (newest first), color-coded by event type", () => {
-    const { manifest, status, traces } = fixture();
-    const html = renderReportHtml({ manifest, status, traces, live: true });
-    expect(html).toContain('class="feed-hdr">Feed');
-    expect(html).toContain("supervisor started"); // a log message
-    expect(html).toContain('class="feed-row phase"'); // phase rows get the phase color rail
-    expect(html).toContain('class="feed-row gate"'); // approval requests get the gate rail
-    expect(html).toContain('class="ftag">gate</span>'); // typed micro-tag
-  });
-
-  it("keeps harness stderr OUT of the feed and in the leaf's collapsed harness log", () => {
+  it("keeps harness stderr OUT of the glance line and in the leaf's collapsed harness log", () => {
     const { manifest, status, traces } = fixture();
     // Without the leaf selected, the hlog lines appear nowhere.
-    const noDrawer = renderReportHtml({ manifest, status, traces, live: true });
-    expect(noDrawer).not.toContain("cache TTL");
+    const noDetail = renderReportHtml({ manifest, status, traces, live: true });
+    expect(noDetail).not.toContain("cache TTL");
     // With the leaf selected, they appear once (deduped ×2), collapsed by default.
-    const withDrawer = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
-    expect(withDrawer).toContain('<details class="hlog" data-key="hlog-1">');
-    expect(withDrawer).not.toContain('<details class="hlog" data-key="hlog-1" open');
-    expect(withDrawer).toContain("Harness log");
-    expect(withDrawer).toContain("3 lines · 1 dup");
-    const dedup = withDrawer.split("failed to renew cache TTL").length - 1;
+    const withDetail = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
+    expect(withDetail).toContain('<details class="hlog" data-key="hlog-1">');
+    expect(withDetail).not.toContain('<details class="hlog" data-key="hlog-1" open');
+    expect(withDetail).toContain("Harness log");
+    expect(withDetail).toContain("3 lines · 1 dup");
+    const dedup = withDetail.split("failed to renew cache TTL").length - 1;
     expect(dedup).toBe(1); // repeated line rendered once…
-    expect(withDrawer).toContain('class="cnt">×2'); // …with its count
+    expect(withDetail).toContain('class="cnt">×2'); // …with its count
   });
 
-  it("drawer shows newest 4 tool calls, older ones collapsed, output boxed+capped", () => {
+  it("detail shows newest 4 tool calls, older ones collapsed, output boxed+capped", () => {
     const { manifest, status, traces } = fixture();
     // Give leaf 1 seven tool calls: t1..t7, t7 newest.
     const leaf = traces.find((t) => t.t === "leaf" && t.seq === 1 && t.rev === 1) as { toolCalls: unknown[] };
@@ -188,21 +213,21 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(strHtml).not.toContain("&quot;a plain text answer&quot;");
   });
 
-  it("uses the viewport layout: scrollable lanes pane and docked feed", () => {
+  it("uses the viewport layout: scrollable phase pane, viewport-locked shell", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: true });
-    expect(html).toContain('class="lanes"'); // lanes scroll region wraps the waterfall
-    expect(html).toContain('class="feed-scroll"'); // feed rows live in their own scroller
+    expect(html).toContain('class="scroll"'); // phase cards scroll region
     expect(html).toContain("height:100vh"); // page never grows
   });
 
-  it("live page wires row-click drawer, esc/close, optimistic approvals, and rAF bars", () => {
+  it("live page wires row-click detail, phase toggle, esc/close, optimistic approvals, and rAF bars", () => {
     const { manifest, status, traces } = fixture();
     const html = renderLivePage({ manifest, status, traces });
-    expect(html).toMatch(/class="row[^"]*" data-seq="\d+"/);
-    expect(html).toContain(".row[data-seq]"); // click handler targets rows
+    expect(html).toMatch(/class="c-row[^"]*" data-seq="\d+"/);
+    expect(html).toContain(".c-row[data-seq]"); // click handler targets rows
+    expect(html).toContain(".c-ph[data-toggle]"); // phase headers collapse their card
     expect(html).toContain("orcCloseDrawer");
-    expect(html).toContain('"/fragment"'); // drawer via ?leaf= fragment fetch
+    expect(html).toContain('"/fragment"'); // detail via ?leaf= fragment fetch
     expect(html).toContain("selectedSeq");
     expect(html).toContain("requestAnimationFrame");
     expect(html).toContain("EventSource");
@@ -210,15 +235,15 @@ describe("renderReportHtml (terminal-ops design)", () => {
     expect(html).toContain("orcApprove");
   });
 
-  it("opens the lane drawer for a selected leaf", () => {
+  it("opens the detail view for a selected leaf", () => {
     const { manifest, status, traces } = fixture();
     const html = renderLivePage({ manifest, status, traces, selectedSeq: 1 });
-    expect(html).toContain('class="drawer"');
-    expect(html).toContain('class="dw-title"');
-    expect(html).toContain("dw-close");
+    expect(html).toContain('class="detail"');
+    expect(html).toContain('class="d-title"');
+    expect(html).toContain("d-close");
     expect(html).toContain('class="dw-meta"'); // runtime/cwd/idle
     // and the clicked row is marked selected
-    expect(html).toContain('class="row sel"');
+    expect(html).toContain('class="c-row sel"');
   });
 
   it("keeps bar geometry inside the run range", () => {
