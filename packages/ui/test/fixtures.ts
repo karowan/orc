@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { JournalRecord, RunManifest, TraceRecord } from "@orc/core/src/contracts.js";
+import type { JournalRecord, RunManifest, TraceRecord } from "@karowanorg/orc-core";
 
 export const T0 = 1_700_000_000_000;
 

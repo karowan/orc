@@ -707,14 +707,14 @@
               <tr><th>Package</th><th>Stable responsibility</th><th>Must not own</th></tr>
             </thead>
             <tbody>
-              <tr><th scope="row"><code>@orc/core</code></th><td>Contracts, QuickJS engine, run files, replay, supervisor, status, policy, canonical JSON.</td><td>Agent-vendor wire protocols or user-facing command rendering.</td></tr>
-              <tr><th scope="row"><code>@orc/executors</code></th><td>Local process groups, stream lifecycle, environment checks.</td><td>Agent semantics, approvals, replay, or result validation.</td></tr>
-              <tr><th scope="row"><code>@orc/harness-*</code></th><td>Vendor protocol mapping, capability discovery, sessions, approvals, normalized events.</td><td>Run ownership, durable state, scheduling, or cross-leaf policy.</td></tr>
-              <tr><th scope="row"><code>@orc/ops</code></th><td>Zod-first operation registry, built-in assembly, detached supervisor startup.</td><td>Separate behavior for each product surface.</td></tr>
-              <tr><th scope="row"><code>@orc/cli</code></th><td>Interpret operations as commands and flags.</td><td>A second command schema or orchestration implementation.</td></tr>
-              <tr><th scope="row"><code>@orc/sdk</code></th><td>Typed ergonomic wrappers around operations and run watching.</td><td>SDK-only execution semantics.</td></tr>
-              <tr><th scope="row"><code>@orc/mcp</code></th><td>Expose operations as stdio tools with coarse <code>readOnlyHint</code> classification.</td><td>Independent schemas or permission guarantees.</td></tr>
-              <tr><th scope="row"><code>@orc/ui</code></th><td>Pure projection, standalone reports, loopback SSE monitor, controls.</td><td>Authoritative run state or hidden control logic.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-core</code></th><td>Contracts, QuickJS engine, run files, replay, supervisor, status, policy, canonical JSON.</td><td>Agent-vendor wire protocols or user-facing command rendering.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-executors</code></th><td>Local process groups, stream lifecycle, environment checks.</td><td>Agent semantics, approvals, replay, or result validation.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-harness-*</code></th><td>Vendor protocol mapping, capability discovery, sessions, approvals, normalized events.</td><td>Run ownership, durable state, scheduling, or cross-leaf policy.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-ops</code></th><td>Zod-first operation registry, built-in assembly, detached supervisor startup.</td><td>Separate behavior for each product surface.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-cli</code></th><td>Interpret operations as commands and flags.</td><td>A second command schema or orchestration implementation.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-sdk</code></th><td>Typed ergonomic wrappers around operations and run watching.</td><td>SDK-only execution semantics.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-mcp</code></th><td>Expose operations as stdio tools with coarse <code>readOnlyHint</code> classification.</td><td>Independent schemas or permission guarantees.</td></tr>
+              <tr><th scope="row"><code>@karowanorg/orc-ui</code></th><td>Pure projection, standalone reports, loopback SSE monitor, controls.</td><td>Authoritative run state or hidden control logic.</td></tr>
             </tbody>
           </table>
         </div>
@@ -732,7 +732,7 @@
         </div>
 
         <div class="grid-2">
-          <pre tabindex="0" role="region" aria-label="Example orc program"><code>import type { Program } from "@orc/sdk/program";
+          <pre tabindex="0" role="region" aria-label="Example orc program"><code>import type { Program } from "@karowanorg/orc-sdk/program";
 
 const program: Program = async ({ agent, parallel, phase }) =&gt; {
   const inventory = await agent("List the modules.", {

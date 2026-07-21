@@ -1,13 +1,30 @@
 {
-  "name": "@orc/harness-claude",
+  "name": "@karowanorg/orc-harness-claude",
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "dependencies": {
-    "@orc/core": "*",
-    "@orc/executors": "*",
+    "@karowanorg/orc-core": "^0.1.0",
+    "@karowanorg/orc-executors": "^0.1.0",
     "@anthropic-ai/claude-agent-sdk": "^0.3.0",
     "zod": "^4.1.0"
+  },
+  "description": "Claude harness for orc via the Anthropic Agent SDK.",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

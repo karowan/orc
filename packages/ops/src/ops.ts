@@ -30,9 +30,9 @@ import {
   type Registry,
   type RunStatus,
   type ThunkSpec,
-} from "@orc/core";
-import { MonitorServer, openInBrowser, portForHome, writeReport } from "@orc/ui";
-import { orcHome } from "@orc/core";
+} from "@karowanorg/orc-core";
+import { MonitorServer, openInBrowser, portForHome, writeReport } from "@karowanorg/orc-ui";
+import { orcHome } from "@karowanorg/orc-core";
 import { GUIDE } from "./guide.js";
 
 export interface OpContext {
@@ -655,7 +655,7 @@ function detachedSupervisorArgs(runId: string): string[] {
     return [fileURLToPath(new URL("./supervisor-entry.js", import.meta.url)), runId];
   }
   if (basename === "orc.mjs") return [owner, "_supervise", runId];
-  throw new Error(`detached supervisor entry is unavailable from bundled @orc/ops (${basename}); keep @orc/ops external`);
+  throw new Error(`detached supervisor entry is unavailable from bundled @karowanorg/orc-ops (${basename}); keep @karowanorg/orc-ops external`);
 }
 
 /** Start the package-owned detached supervisor and wait for its startup signal. */

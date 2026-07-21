@@ -1,5 +1,5 @@
 /**
- * @orc/sdk/program — type-only surface for program authors. Import with
+ * @karowanorg/orc-sdk/program — type-only surface for program authors. Import with
  * `import type` (runtime imports are rejected by the sandbox).
  */
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };

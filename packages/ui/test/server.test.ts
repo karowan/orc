@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ControlMessage, RunStatus } from "@orc/core/src/contracts.js";
+import type { ControlMessage, RunStatus } from "@karowanorg/orc-core";
 import { MonitorServer, portForHome } from "../src/index.js";
 import { waitFor, writeRunDir, type FixtureRun } from "./fixtures.js";
 

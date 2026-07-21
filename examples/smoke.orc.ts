@@ -1,5 +1,5 @@
 // Tiny live smoke: two parallel leaves feeding a synthesis. Read-only.
-import type { Program } from "@orc/sdk/program";
+import type { Program } from "@karowanorg/orc-sdk/program";
 
 const OK = { type: "object", properties: { word: { type: "string" } }, required: ["word"] };
 

@@ -11,8 +11,8 @@ import type {
   HarnessEvent,
   LeafRequest,
   SpawnOptions,
-} from "@orc/core/src/contracts.js";
-import { LocalExecutor } from "@orc/executors";
+} from "@karowanorg/orc-core";
+import { LocalExecutor } from "@karowanorg/orc-executors";
 import { createCodexHarness } from "../src/harness.js";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-app-server.mjs");

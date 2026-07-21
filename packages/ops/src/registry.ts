@@ -4,11 +4,11 @@
  * deliberately NO ambient plugin scanning; custom harnesses and extensions
  * come only from an explicit orc.config.(js|json).
  */
-import { callerAffinity, loadConfig, type Harness, type OrcConfig } from "@orc/core";
-import type { Registry } from "@orc/core";
-import { LocalExecutor } from "@orc/executors";
-import { claudeHarness } from "@orc/harness-claude";
-import { codexHarness, createCodexHarness } from "@orc/harness-codex";
+import { callerAffinity, loadConfig, type Harness, type OrcConfig } from "@karowanorg/orc-core";
+import type { Registry } from "@karowanorg/orc-core";
+import { LocalExecutor } from "@karowanorg/orc-executors";
+import { claudeHarness } from "@karowanorg/orc-harness-claude";
+import { codexHarness, createCodexHarness } from "@karowanorg/orc-harness-codex";
 import { makeExecHarness } from "./exec-harness.js";
 
 export interface RegistryOptions {

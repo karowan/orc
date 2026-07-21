@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Executor, HarnessContext, HarnessEvent, LeafRequest } from "@orc/core";
+import type { Executor, HarnessContext, HarnessEvent, LeafRequest } from "@karowanorg/orc-core";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
 const sdk = vi.hoisted(() => ({ query: vi.fn() }));

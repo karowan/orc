@@ -13,9 +13,9 @@ import type {
   Harness,
   HarnessCapabilities,
   Registry,
-} from "@orc/core";
-import { LocalExecutor } from "@orc/executors";
-import { validate, type OpContext } from "@orc/ops";
+} from "@karowanorg/orc-core";
+import { LocalExecutor } from "@karowanorg/orc-executors";
+import { validate, type OpContext } from "@karowanorg/orc-ops";
 
 // A harness whose catalog carries one model with a ladder and one that takes
 // no effort param — the shape the real claude/codex harnesses now report.

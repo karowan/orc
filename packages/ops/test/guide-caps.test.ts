@@ -9,9 +9,9 @@ import type {
   Harness,
   HarnessCapabilities,
   Registry,
-} from "@orc/core";
-import { LocalExecutor } from "@orc/executors";
-import { guide, GUIDE, type OpContext } from "@orc/ops";
+} from "@karowanorg/orc-core";
+import { LocalExecutor } from "@karowanorg/orc-executors";
+import { guide, GUIDE, type OpContext } from "@karowanorg/orc-ops";
 
 const fakeHarness: Harness = {
   name: "fake",

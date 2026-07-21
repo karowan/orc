@@ -1,16 +1,32 @@
 {
-  "name": "@orc/cli",
+  "name": "@karowanorg/orc-cli",
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/bin.js",
   "bin": {
-    "orc": "src/bin.ts"
+    "orc": "dist/bin.js"
   },
   "dependencies": {
-    "@orc/ops": "*",
+    "@karowanorg/orc-ops": "^0.1.0",
     "commander": "^13.0.0",
-    "zod": "^4.1.0",
-    "tsx": "^4.19.0"
+    "zod": "^4.1.0"
+  },
+  "description": "The orc CLI - every command is a runtime interpretation of the operation registry.",
+  "types": "dist/bin.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/bin.d.ts",
+      "default": "./dist/bin.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

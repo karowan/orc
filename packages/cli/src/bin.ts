@@ -1,12 +1,13 @@
+#!/usr/bin/env node
 /**
  * The orc CLI — every command is a runtime interpretation of the zod-first
- * operation registry (@orc/ops). No hand-maintained flag lists: flags, help
+ * operation registry (@karowanorg/orc-ops). No hand-maintained flag lists: flags, help
  * text, and the `orc commands --json` catalog all derive from the op schemas.
  */
 import { Command } from "commander";
 import { z } from "zod";
-import { ALL_OPS, buildRegistry, catalog, runSupervisorChild, type OpContext, type OpDef } from "@orc/ops";
-import { MonitorServer } from "@orc/ui";
+import { ALL_OPS, buildRegistry, catalog, runSupervisorChild, type OpContext, type OpDef } from "@karowanorg/orc-ops";
+import { MonitorServer } from "@karowanorg/orc-ui";
 
 interface JsonSchemaProp {
   type?: string | string[];
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
     .command("mcp")
     .description("serve the orc operations as MCP tools over stdio")
     .action(async () => {
-      const { serveMcp } = await import("@orc/mcp");
+      const { serveMcp } = await import("@karowanorg/orc-mcp");
       await serveMcp();
     });
 

@@ -1,5 +1,5 @@
 /**
- * @orc/sdk — the embedded TypeScript SDK. Types are inferred from the zod-first
+ * @karowanorg/orc-sdk — the embedded TypeScript SDK. Types are inferred from the zod-first
  * operation registry; the Orc class is a thin ergonomic layer over the same op
  * handlers the CLI and MCP call.
  */
@@ -17,8 +17,8 @@ import {
   listApprovals as listApprovalsOp,
   validate as validateOp,
   type OpContext,
-} from "@orc/ops";
-import { readTraces, openApprovals, statusForRun, type Json, type RunStatus } from "@orc/core";
+} from "@karowanorg/orc-ops";
+import { readTraces, openApprovals, statusForRun, type Json, type RunStatus } from "@karowanorg/orc-core";
 
 export type LaunchInput = z.input<typeof launchOp.input>;
 export type ValidateInput = z.input<typeof validateOp.input>;

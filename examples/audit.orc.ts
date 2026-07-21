@@ -1,7 +1,7 @@
 // A slightly meatier run so the waterfall has something to look at: three
 // independent lanes (each a two-step audit→plan chain) that finish on their own
 // time, then a synthesis. Read-only.
-import type { Program } from "@orc/sdk/program";
+import type { Program } from "@karowanorg/orc-sdk/program";
 
 const FINDINGS = { type: "object", properties: { area: { type: "string" }, note: { type: "string" } }, required: ["area", "note"] };
 const PLAN = { type: "object", properties: { area: { type: "string" }, step: { type: "string" } }, required: ["area", "step"] };

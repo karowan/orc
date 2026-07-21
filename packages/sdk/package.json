@@ -1,16 +1,33 @@
 {
-  "name": "@orc/sdk",
+  "name": "@karowanorg/orc-sdk",
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "dependencies": {
-    "@orc/ops": "*",
-    "@orc/core": "*",
+    "@karowanorg/orc-ops": "^0.1.0",
+    "@karowanorg/orc-core": "^0.1.0",
     "zod": "^4.1.0"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./program": "./src/program.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./program": {
+      "types": "./dist/program.d.ts",
+      "default": "./dist/program.js"
+    }
+  },
+  "description": "Embedded TypeScript SDK for orc: launch, watch, and collect runs in-process.",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
