@@ -7,7 +7,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { ALL_OPS, buildRegistry, catalog, type OpContext, type OpDef } from "@orc/ops";
+import { ALL_OPS, buildRegistry, catalog, type OpContext, type OpDef } from "@karowanorg/orc-ops";
 
 export async function serveMcp(): Promise<void> {
   const server = new McpServer({ name: "orc", version: "0.1.0" });

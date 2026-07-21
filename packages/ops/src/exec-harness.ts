@@ -6,7 +6,7 @@
  */
 import * as path from "node:path";
 import { z } from "zod";
-import type { Harness, HarnessCapabilities, HarnessContext, HarnessEvent, LeafRequest } from "@orc/core";
+import type { Harness, HarnessCapabilities, HarnessContext, HarnessEvent, LeafRequest } from "@karowanorg/orc-core";
 
 const HarnessCapabilitiesSchema = z.object({
   available: z.boolean(),

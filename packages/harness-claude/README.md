@@ -1,4 +1,4 @@
-# @orc/harness-claude
+# @karowanorg/orc-harness-claude
 
 Claude harness for orc: Anthropic Agent SDK locally, claude CLI stream-json over SSH.
 

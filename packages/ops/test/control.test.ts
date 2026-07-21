@@ -10,14 +10,14 @@ import {
   type Registry,
   type RunManifest,
   type TraceRecord,
-} from "@orc/core";
+} from "@karowanorg/orc-core";
 import {
   cancel,
   respondApproval,
   resume,
   spawnDetachedSupervisor,
   type OpContext,
-} from "@orc/ops";
+} from "@karowanorg/orc-ops";
 
 const registry: Registry = {
   harnesses: new Map(),

@@ -1,5 +1,5 @@
-import { readManifest, superviseRun } from "@orc/core";
-import { writeReport } from "@orc/ui";
+import { readManifest, superviseRun } from "@karowanorg/orc-core";
+import { writeReport } from "@karowanorg/orc-ui";
 import { buildRegistry } from "./registry.js";
 
 async function signalStartup(type: "orc-supervisor-ready" | "orc-supervisor-error", message?: string): Promise<void> {

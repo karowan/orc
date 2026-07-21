@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { JournalRecord } from "@orc/core";
-import { projectStatus } from "@orc/core";
+import type { JournalRecord } from "@karowanorg/orc-core";
+import { projectStatus } from "@karowanorg/orc-core";
 import { renderLivePage, renderReportHtml } from "../src/index.js";
 import { makeJournal, makeManifest, makeTraces } from "./fixtures.js";
 

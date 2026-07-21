@@ -1,5 +1,5 @@
 {
-  "name": "@orc/cli",
+  "name": "@karowanorg/orc-cli",
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
@@ -8,7 +8,7 @@
     "orc": "dist/bin.js"
   },
   "dependencies": {
-    "@orc/ops": "^0.1.0",
+    "@karowanorg/orc-ops": "^0.1.0",
     "commander": "^13.0.0",
     "zod": "^4.1.0"
   },

@@ -1,22 +1,13 @@
 # Publishing orc to npm
 
-All nine packages publish publicly under the `@orc/*` scope from this
+All nine packages publish publicly under the `@karowanorg/orc-*` scope from this
 workspace. Entry points are built (`dist/`); `files` whitelists keep tarballs
 lean; interdeps are pinned `^0.1.0`.
 
 ## One-time setup
 
-1. `npm login`
-2. The `@orc` scope must be yours. Check/claim: `npm org ls orc` — if it
-   doesn't exist, create the org at npmjs.com/org/create (name `orc`). If the
-   name is taken, pick a scope you own and rewrite in one pass:
-
-   ```sh
-   # e.g. NEW=@karowan; updates package names + interdeps everywhere
-   grep -rl '@orc/' packages/*/package.json packages/*/src packages/*/test \
-     ../orc-review/src ../orc-review/test ../orc-review/package.json \
-     | xargs sed -i '' "s|@orc/|${NEW}/|g"
-   ```
+`npm login` as a member of the `karowanorg` org (packages publish under
+`@karowanorg/orc-*`; `publishConfig.access: public` is set per package).
 
 ## Publish
 
@@ -36,8 +27,8 @@ edits), rebuild, `npm run release`.
 
 ## Invariants to keep
 
-- `@orc/ops` must stay externalizable: the detached supervisor resolves its
+- `@karowanorg/orc-ops` must stay externalizable: the detached supervisor resolves its
   own entry file (`dist/ops.js` → `dist/supervisor-entry.js`). Never bundle
   ops into a consumer.
-- No deep `@orc/*/src/...` imports — the `exports` maps only expose package
-  roots (plus `@orc/sdk/program`).
+- No deep `@karowanorg/orc-*/src/...` imports — the `exports` maps only expose package
+  roots (plus `@karowanorg/orc-sdk/program`).

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runPaths } from "@orc/core";
+import { runPaths } from "@karowanorg/orc-core";
 import { writeReport } from "../src/index.js";
 import { writeRunDir, XSS_PROMPT } from "./fixtures.js";
 

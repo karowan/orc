@@ -1,4 +1,4 @@
-# @orc/ops
+# @karowanorg/orc-ops
 
 The zod-first operation registry orc's CLI, MCP server, and SDK all interpret.
 

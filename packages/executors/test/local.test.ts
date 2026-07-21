@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { Proc } from "@orc/core";
+import type { Proc } from "@karowanorg/orc-core";
 import { LocalExecutor } from "../src/local.js";
 import { checkCwd, doctor } from "../src/doctor.js";
 import { executorFor } from "../src/factory.js";

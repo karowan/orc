@@ -1,4 +1,4 @@
-# @orc/ui
+# @karowanorg/orc-ui
 
 orc monitor: live SSE run pages and self-contained static report.html.
 

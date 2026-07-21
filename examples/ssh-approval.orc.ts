@@ -1,7 +1,7 @@
 // An orchestration with a remote (ssh) leaf that requires a permission bubble.
 // The write leaf runs codex ON frank in manual mode; its approval request flows
 // back over the ssh app-server pipe and bubbles to the operator.
-import type { Program } from "@orc/sdk/program";
+import type { Program } from "@karowanorg/orc-sdk/program";
 
 const program: Program = async ({ agent, phase }) => {
   const plan = await phase("plan", () =>

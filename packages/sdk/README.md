@@ -1,4 +1,4 @@
-# @orc/sdk
+# @karowanorg/orc-sdk
 
 Embedded TypeScript SDK for orc: launch, watch, and collect runs in-process.
 

@@ -1,4 +1,4 @@
-# @orc/executors
+# @karowanorg/orc-executors
 
 Process/filesystem executors for orc: local process groups and SSH destinations.
 

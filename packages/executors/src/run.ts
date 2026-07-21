@@ -1,5 +1,5 @@
 import { finished } from "node:stream/promises";
-import type { Proc, SpawnOptions } from "@orc/core";
+import type { Proc, SpawnOptions } from "@karowanorg/orc-core";
 
 const STREAM_DRAIN_TIMEOUT_MS = 10_000;
 

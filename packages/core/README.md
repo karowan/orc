@@ -1,4 +1,4 @@
-# @orc/core
+# @karowanorg/orc-core
 
 The orc engine: deterministic QuickJS event loop, journaled leaves, replay/resume, supervisor, contracts.
 

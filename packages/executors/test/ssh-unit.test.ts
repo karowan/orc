@@ -1,6 +1,6 @@
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import type { Proc, SpawnOptions } from "@orc/core";
+import type { Proc, SpawnOptions } from "@karowanorg/orc-core";
 import { LocalExecutor } from "../src/local.js";
 import { shQuote } from "../src/shquote.js";
 import { SshExecutor } from "../src/ssh.js";

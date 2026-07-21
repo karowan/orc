@@ -1,6 +1,6 @@
 // Real code-reading run: each leaf opens actual source files in the working
 // directory and describes what that package does, then a synthesis combines them.
-import type { Program } from "@orc/sdk/program";
+import type { Program } from "@karowanorg/orc-sdk/program";
 
 const DESC = {
   type: "object",

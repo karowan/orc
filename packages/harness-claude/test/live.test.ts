@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { claudeHarness } from "../src/index.js";
-import type { HarnessContext, HarnessEvent, LeafRequest } from "@orc/core";
+import type { HarnessContext, HarnessEvent, LeafRequest } from "@karowanorg/orc-core";
 
 const LIVE = process.env.ORC_CLAUDE_LIVE === "1";
 

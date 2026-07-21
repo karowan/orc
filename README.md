@@ -12,7 +12,7 @@ An orc program is a TypeScript file with one default-exported async function. It
 runs in a deterministic sandbox (QuickJS, sync build) and drives real agent work:
 
 ```ts
-import type { Program } from "@orc/sdk/program";
+import type { Program } from "@karowanorg/orc-sdk/program";
 
 const program: Program = async ({ agent, parallel, phase }) => {
   const inventory = await agent("List this repo's modules.", {
@@ -44,15 +44,15 @@ The canonical rationale, invariants, and accepted tradeoffs live in
 
 | Package | Role |
 |---|---|
-| `@orc/core` | The engine: QuickJS deterministic event loop, sequence identity, journal (WAL) + trace sidecar, content-addressed results, scheduler (`maxParallel`), policy caps, replay + fail-forward resume, supervisor. |
-| `@orc/executors` | `LocalExecutor` (process groups) and `SshExecutor` (system `ssh`, honours `~/.ssh/config`). One `Executor` interface; `cwd` and `host` are separate fields. |
-| `@orc/harness-claude` | Built-in harness: Anthropic Agent SDK locally, claude CLI stream-json over ssh for remote hosts. |
-| `@orc/harness-codex` | Built-in harness: `codex app-server` JSON-RPC, run through the executor so it works locally **and** over ssh unchanged. |
-| `@orc/ops` | The zod-first operation registry — canonical definitions for registry-backed commands and tools. Plus registry assembly (zero-config built-ins). |
-| `@orc/cli` | `orc …` — every command is a runtime interpretation of the registry (flags, help, `orc commands --json` all derived). |
-| `@orc/mcp` | stdio MCP server; the same ops as tools, zod schemas native, `readOnlyHint` discipline. |
-| `@orc/sdk` | Embedded TypeScript SDK (`new Orc().launch(...)`, `run.watch()`), input types via `z.input`; plus `@orc/sdk/program` for authors. |
-| `@orc/ui` | Trace projection → self-contained `report.html` + a live SSE waterfall server. |
+| `@karowanorg/orc-core` | The engine: QuickJS deterministic event loop, sequence identity, journal (WAL) + trace sidecar, content-addressed results, scheduler (`maxParallel`), policy caps, replay + fail-forward resume, supervisor. |
+| `@karowanorg/orc-executors` | `LocalExecutor` (process groups) and `SshExecutor` (system `ssh`, honours `~/.ssh/config`). One `Executor` interface; `cwd` and `host` are separate fields. |
+| `@karowanorg/orc-harness-claude` | Built-in harness: Anthropic Agent SDK locally, claude CLI stream-json over ssh for remote hosts. |
+| `@karowanorg/orc-harness-codex` | Built-in harness: `codex app-server` JSON-RPC, run through the executor so it works locally **and** over ssh unchanged. |
+| `@karowanorg/orc-ops` | The zod-first operation registry — canonical definitions for registry-backed commands and tools. Plus registry assembly (zero-config built-ins). |
+| `@karowanorg/orc-cli` | `orc …` — every command is a runtime interpretation of the registry (flags, help, `orc commands --json` all derived). |
+| `@karowanorg/orc-mcp` | stdio MCP server; the same ops as tools, zod schemas native, `readOnlyHint` discipline. |
+| `@karowanorg/orc-sdk` | Embedded TypeScript SDK (`new Orc().launch(...)`, `run.watch()`), input types via `z.input`; plus `@karowanorg/orc-sdk/program` for authors. |
+| `@karowanorg/orc-ui` | Trace projection → self-contained `report.html` + a live SSE waterfall server. |
 
 ## Determinism & durability
 

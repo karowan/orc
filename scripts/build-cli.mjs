@@ -24,7 +24,7 @@ await build({
   banner: {
     js: "#!/usr/bin/env node\nimport { createRequire as __cr } from 'node:module';\nconst require = __cr(import.meta.url);\n",
   },
-  // @orc/* and the deep ./src/*.ts imports resolve to real TS and get bundled.
+  // @karowanorg/orc-* and the deep ./src/*.ts imports resolve to real TS and get bundled.
   logLevel: "info",
 });
 chmodSync("dist-cli/orc.mjs", 0o755);

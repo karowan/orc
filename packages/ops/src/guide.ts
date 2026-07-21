@@ -14,7 +14,7 @@ a program, launch it, then watch it and collect the result.
 A program is a \`.orc.ts\` file with a single default-exported async function.
 It receives an api object and returns the run's result:
 
-    import type { Program } from "@orc/sdk/program"; // optional, type-only
+    import type { Program } from "@karowanorg/orc-sdk/program"; // optional, type-only
 
     const program: Program = async ({ agent, parallel, phase }) => {
       const inventory = await agent("List the modules in this repo.", {

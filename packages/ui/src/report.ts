@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import { readJournal, readManifest, readTraces, runPaths } from "@orc/core";
-import { statusForRun } from "@orc/core";
+import { readJournal, readManifest, readTraces, runPaths } from "@karowanorg/orc-core";
+import { statusForRun } from "@karowanorg/orc-core";
 import { renderReportHtml } from "./render.js";
 
 /**

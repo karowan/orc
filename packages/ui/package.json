@@ -1,11 +1,11 @@
 {
-  "name": "@orc/ui",
+  "name": "@karowanorg/orc-ui",
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@orc/core": "^0.1.0"
+    "@karowanorg/orc-core": "^0.1.0"
   },
   "description": "orc monitor: live SSE run pages and self-contained static report.html.",
   "types": "dist/index.d.ts",

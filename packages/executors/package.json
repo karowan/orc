@@ -1,11 +1,11 @@
 {
-  "name": "@orc/executors",
+  "name": "@karowanorg/orc-executors",
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@orc/core": "^0.1.0"
+    "@karowanorg/orc-core": "^0.1.0"
   },
   "description": "Process/filesystem executors for orc: local process groups and SSH destinations.",
   "types": "dist/index.d.ts",

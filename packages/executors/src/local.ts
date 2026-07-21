@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs/promises";
-import type { Executor, Proc, SpawnOptions } from "@orc/core";
+import type { Executor, Proc, SpawnOptions } from "@karowanorg/orc-core";
 import { collectRun } from "./run.js";
 
 export interface LocalExecutorOptions {

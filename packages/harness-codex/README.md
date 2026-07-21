@@ -1,4 +1,4 @@
-# @orc/harness-codex
+# @karowanorg/orc-harness-codex
 
 Codex harness for orc: codex app-server JSON-RPC through the executor.
 

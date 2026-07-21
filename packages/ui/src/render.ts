@@ -25,8 +25,8 @@ import type {
   RunStatus,
   ToolCallTrace,
   TraceRecord,
-} from "@orc/core";
-import { latestLeafTraces, openApprovals } from "@orc/core";
+} from "@karowanorg/orc-core";
+import { latestLeafTraces, openApprovals } from "@karowanorg/orc-core";
 
 // ---------------------------------------------------------------------------
 // Escaping + formatting

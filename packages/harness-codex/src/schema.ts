@@ -1,5 +1,5 @@
-import type { Json } from "@orc/core";
-import { validateAgainstSchema } from "@orc/core";
+import type { Json } from "@karowanorg/orc-core";
+import { validateAgainstSchema } from "@karowanorg/orc-core";
 
 /**
  * Normalize a JSON Schema for codex `outputSchema`.

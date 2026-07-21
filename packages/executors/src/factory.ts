@@ -1,4 +1,4 @@
-import type { Executor } from "@orc/core";
+import type { Executor } from "@karowanorg/orc-core";
 import { LocalExecutor } from "./local.js";
 import { SshExecutor } from "./ssh.js";
 

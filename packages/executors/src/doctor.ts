@@ -1,4 +1,4 @@
-import type { Executor } from "@orc/core";
+import type { Executor } from "@karowanorg/orc-core";
 
 export interface HarnessBinaryReport {
   name: string;

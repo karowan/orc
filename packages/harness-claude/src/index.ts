@@ -56,7 +56,7 @@ import type {
   Json,
   LeafRequest,
   ModelCapability,
-} from "@orc/core";
+} from "@karowanorg/orc-core";
 
 const WRITE_TOOLS = ["Edit", "Write", "NotebookEdit"];
 const READ_ONLY_DISALLOWED_TOOLS = ["Bash", ...WRITE_TOOLS];

@@ -4,9 +4,9 @@
  */
 import * as fs from "node:fs";
 import * as http from "node:http";
-import type { ControlMessage, LeafTraceRecord, RunEventRecord, TraceRecord } from "@orc/core";
-import { appendControl, listRuns, orcHome, readJournal, readManifest, readTraces, runPaths } from "@orc/core";
-import { statusForRun } from "@orc/core";
+import type { ControlMessage, LeafTraceRecord, RunEventRecord, TraceRecord } from "@karowanorg/orc-core";
+import { appendControl, listRuns, orcHome, readJournal, readManifest, readTraces, runPaths } from "@karowanorg/orc-core";
+import { statusForRun } from "@karowanorg/orc-core";
 import { renderIndexPage, renderLivePage, renderRunBody } from "./render.js";
 
 const ID_RE = /^[a-zA-Z0-9_-]+$/;

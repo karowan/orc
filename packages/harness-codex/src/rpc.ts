@@ -1,4 +1,4 @@
-import type { Proc } from "@orc/core";
+import type { Proc } from "@karowanorg/orc-core";
 
 export type RpcId = number | string;
 

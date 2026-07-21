@@ -1,4 +1,4 @@
-# @orc/mcp
+# @karowanorg/orc-mcp
 
 orc as a stdio MCP server: every operation exposed as a tool.
 

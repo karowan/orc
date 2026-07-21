@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runPaths, type RunManifest } from "@orc/core";
-import { Orc } from "@orc/sdk";
+import { runPaths, type RunManifest } from "@karowanorg/orc-core";
+import { Orc } from "@karowanorg/orc-sdk";
 
 let home: string;
 let previousHome: string | undefined;
@@ -44,7 +44,7 @@ function writeRunningRun(runId: string): void {
   fs.writeFileSync(paths.traces, "");
 }
 
-describe("@orc/sdk", () => {
+describe("@karowanorg/orc-sdk", () => {
   it("launches through the package-owned entry with the SDK registry cwd", async () => {
     const configDir = path.join(home, "config");
     fs.mkdirSync(configDir);

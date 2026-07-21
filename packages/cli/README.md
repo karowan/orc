@@ -1,4 +1,4 @@
-# @orc/cli
+# @karowanorg/orc-cli
 
 The orc CLI - every command is a runtime interpretation of the operation registry.
 

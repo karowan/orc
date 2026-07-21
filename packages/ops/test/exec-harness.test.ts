@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Executor } from "@orc/core";
-import { makeExecHarness } from "@orc/ops";
+import type { Executor } from "@karowanorg/orc-core";
+import { makeExecHarness } from "@karowanorg/orc-ops";
 
 function executorReturning(stdout: string): Executor {
   return {
