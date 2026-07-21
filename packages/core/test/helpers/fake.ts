@@ -12,7 +12,6 @@ import type { Registry } from "../../src/supervisor.js";
 
 /** Minimal executor: never actually used by the fake harness. */
 export const fakeExecutor: Executor = {
-  host: undefined,
   spawn(): Proc {
     throw new Error("fakeExecutor.spawn not implemented");
   },
@@ -102,7 +101,7 @@ export function makeRegistry(harness: Harness, extras?: Partial<Registry>): Regi
     harnesses: new Map([[harness.name, harness]]),
     extensions: extras?.extensions ?? new Map(),
     defaultHarness: harness.name,
-    executorFor: () => fakeExecutor,
+    executor: fakeExecutor,
     ...extras,
   };
 }

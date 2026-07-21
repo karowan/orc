@@ -8,9 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { Proc } from "@orc/core/src/contracts.js";
 import { LocalExecutor } from "../src/local.js";
 import { checkCwd, doctor } from "../src/doctor.js";
-import { executorFor } from "../src/factory.js";
 import { collectRun } from "../src/run.js";
-import { SshExecutor } from "../src/ssh.js";
 
 const local = new LocalExecutor();
 
@@ -191,24 +189,9 @@ describe("collectRun", () => {
   });
 });
 
-describe("executorFor", () => {
-  it("returns a cached LocalExecutor for undefined and SshExecutor per host", () => {
-    const a = executorFor(undefined);
-    expect(a.host).toBeUndefined();
-    expect(executorFor(undefined)).toBe(a);
-    const b = executorFor("frank");
-    expect(b).toBeInstanceOf(SshExecutor);
-    expect(b.host).toBe("frank");
-    expect(executorFor("frank")).toBe(b);
-    expect(executorFor("user@other")).not.toBe(b);
-    expect(() => executorFor("-oProxyCommand=bad")).toThrow("SshExecutor: invalid destination");
-  });
-});
-
 describe("doctor", () => {
   it("reports found binaries with versions and missing ones as not found", async () => {
     const report = await doctor(local, { harnesses: ["sh", "definitely-not-a-real-binary-orc"] });
-    expect(report.host).toBeUndefined();
     const sh = report.harnesses.find((h) => h.name === "sh");
     expect(sh?.found).toBe(true);
     expect(sh?.path).toMatch(/\/sh$/);

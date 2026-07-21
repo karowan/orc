@@ -52,7 +52,6 @@ its prompt (plus the shared \`--brief\`).
       reasoningEffort  "low" | "medium" | "high" | "xhigh" | "max"
       readOnly         default true; set false for a leaf that edits files
       cwd              working directory for this leaf (defaults to the run's)
-      host             SSH destination to run this leaf on a remote machine
       idleTimeout      ms with no output before the leaf is killed (false = off)
       phase            group this call under a phase label
     To see valid \`harness\`, \`model\`, and \`reasoningEffort\` values for your
@@ -110,7 +109,7 @@ back up (it re-checks the working-tree state first, never blindly redoing work).
     orc launch   --program-path ./my.orc.ts --brief "what this run is for"
 
 \`--brief\` (required) is shared context added to every leaf. Common launch flags:
-\`--allow-writes\`, \`--host <ssh>\`, \`--approval-mode manual|accept-edits|auto|bypass\`,
+\`--allow-writes\`, \`--approval-mode manual|accept-edits|auto|bypass\`,
 \`--sandbox\`, \`--harness claude|codex\`, \`--budget <usd>\` (fail the run after
 observed estimated cost exceeds this; concurrent work may overshoot), \`--wait\`
 (block for the result instead of running in the background).
@@ -138,7 +137,7 @@ tool. Answer it from anywhere:
     orc <command> --help       # a command's flags
     orc commands               # JSON catalog of all operations
     orc capabilities           # available harnesses, models, and reasoning levels
-    orc doctor --host <ssh>    # check a local or remote machine is ready
+    orc doctor                 # check this machine is ready
 
 Every command supports \`--json\`. Run state lives in \`$ORC_HOME\` (default
 \`~/.orc\`). Real runs need \`claude\` and/or \`codex\` installed and logged in.

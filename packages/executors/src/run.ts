@@ -55,7 +55,7 @@ export async function collectRun(
   const streamsDone = Promise.all(streams);
   void streamsDone.catch(() => proc.kill());
 
-  // No input to provide: close stdin so remote `cat`-style commands terminate.
+  // No input to provide: close stdin so `cat`-style commands terminate.
   if (proc.stdin && opts?.stdin !== "ignore") proc.stdin.end();
 
   let timedOut = false;

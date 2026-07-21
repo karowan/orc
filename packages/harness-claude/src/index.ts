@@ -1,15 +1,11 @@
 /**
  * The claude harness — built-in harness #1.
  *
- * Two transports behind one contract:
- * - LOCAL (no host): @anthropic-ai/claude-agent-sdk `query()` — richest path:
- *   canUseTool approval bridging, settingSources (user's own settings are the
- *   policy substrate), native structured output, session resume. Note the SDK
- *   still SPAWNS the bundled CLI as a subprocess (verified in sdk source) — the
- *   SDK owns that child's lifecycle; cancellation goes through abortController.
- * - REMOTE (host set): the claude CLI over the executor (ssh), speaking the
- *   same stream-json protocol. v1 remote supports approval modes auto/bypass
- *   only (manual/accept-edits need an approval back-channel — fail closed).
+ * Transport: @anthropic-ai/claude-agent-sdk `query()` — canUseTool approval
+ * bridging, settingSources (user's own settings are the policy substrate),
+ * native structured output, session resume. Note the SDK still SPAWNS the
+ * bundled CLI as a subprocess (verified in sdk source) — the SDK owns that
+ * child's lifecycle; cancellation goes through abortController.
  *
  * Approval-mode mapping (verified against SDK 0.3.215 types):
  * - manual       -> permissionMode "default"  + canUseTool -> requestApproval
@@ -60,7 +56,6 @@ import type {
 
 const WRITE_TOOLS = ["Edit", "Write", "NotebookEdit"];
 const READ_ONLY_DISALLOWED_TOOLS = ["Bash", ...WRITE_TOOLS];
-const POST_EXIT_DRAIN_MS = 10_000;
 
 export const claudeHarness: Harness = {
   name: "claude",
@@ -77,64 +72,58 @@ export const claudeHarness: Harness = {
         detail: "claude CLI not found on this executor",
       };
     }
-    let models: ModelCapability[] = [];
-    if (!executor.host) {
-      // Native catalog via the SDK's supportedModels control request. Each
-      // ModelInfo carries its OWN supportedEffortLevels (per-model). Point at
-      // the system claude — orc doesn't ship the SDK's bundled CLI.
-      try {
-        const claudePath = systemClaudePath();
-        const q = query({
-          prompt: "",
-          options: { maxTurns: 0, ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}) },
+    const models: ModelCapability[] = [];
+    // Native catalog via the SDK's supportedModels control request. Each
+    // ModelInfo carries its OWN supportedEffortLevels (per-model). Point at
+    // the system claude — orc doesn't ship the SDK's bundled CLI.
+    try {
+      const claudePath = systemClaudePath();
+      const q = query({
+        prompt: "",
+        options: { maxTurns: 0, ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}) },
+      });
+      // NB: clear the deadline timer once the race settles — an uncleared
+      // setTimeout keeps the Node event loop alive, so the CLI would print
+      // its result and then appear to hang until the timer fired.
+      let deadline: NodeJS.Timeout | undefined;
+      const infos = await Promise.race([
+        q.supportedModels(),
+        new Promise<never>((_, rej) => {
+          deadline = setTimeout(() => rej(new Error("timeout")), 20_000);
+        }),
+      ]).finally(() => deadline && clearTimeout(deadline));
+      const seen = new Set<string>();
+      for (const m of infos) {
+        const id = m.resolvedModel ?? m.value;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const info = m as unknown as { supportsEffort?: boolean; supportedEffortLevels?: string[]; displayName?: string };
+        models.push({
+          id,
+          displayName: info.displayName,
+          reasoningEfforts: info.supportsEffort === false ? [] : (info.supportedEffortLevels ?? []),
         });
-        // NB: clear the deadline timer once the race settles — an uncleared
-        // setTimeout keeps the Node event loop alive, so the CLI would print
-        // its result and then appear to hang until the timer fired.
-        let deadline: NodeJS.Timeout | undefined;
-        const infos = await Promise.race([
-          q.supportedModels(),
-          new Promise<never>((_, rej) => {
-            deadline = setTimeout(() => rej(new Error("timeout")), 20_000);
-          }),
-        ]).finally(() => deadline && clearTimeout(deadline));
-        const seen = new Set<string>();
-        for (const m of infos) {
-          const id = m.resolvedModel ?? m.value;
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          const info = m as unknown as { supportsEffort?: boolean; supportedEffortLevels?: string[]; displayName?: string };
-          models.push({
-            id,
-            displayName: info.displayName,
-            reasoningEfforts: info.supportsEffort === false ? [] : (info.supportedEffortLevels ?? []),
-          });
-        }
-        await q.interrupt().catch(() => undefined);
-      } catch {
-        /* version-only capability report */
       }
+      await q.interrupt().catch(() => undefined);
+    } catch {
+      /* version-only capability report */
     }
     return {
       available: true,
       version: version.stdout.trim().split("\n")[0],
       models,
-      approvalModes: executor.host ? ["auto", "bypass"] : ["manual", "accept-edits", "auto", "bypass"],
+      approvalModes: ["manual", "accept-edits", "auto", "bypass"],
       structuredOutput: true,
       sessions: true,
-      detail: executor.host
-        ? "claude CLI over ssh (stream-json); remote approvals limited to auto/bypass in v1"
-        : "Agent SDK; model catalog via supportedModels()",
+      detail: "Agent SDK; model catalog via supportedModels()",
     };
   },
 
-  invoke(req: LeafRequest, ctx: HarnessContext): AsyncIterable<HarnessEvent> {
-    return req.host ? invokeRemoteCli(req, ctx) : invokeSdk(req, ctx);
-  },
+  invoke: invokeSdk,
 };
 
 // ---------------------------------------------------------------------------
-// Local transport: Agent SDK
+// Transport: Agent SDK
 // ---------------------------------------------------------------------------
 async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<HarnessEvent> {
   if (ctx.signal.aborted) {
@@ -324,191 +313,6 @@ function* mapSdkMessage(message: SDKMessage): Iterable<HarnessEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// Remote transport: claude CLI over the executor (same stream-json protocol)
-// ---------------------------------------------------------------------------
-async function* invokeRemoteCli(req: LeafRequest, ctx: HarnessContext): AsyncIterable<HarnessEvent> {
-  if (ctx.signal.aborted) {
-    yield { kind: "error", message: `aborted: ${String(ctx.signal.reason ?? "cancelled")}` };
-    return;
-  }
-  if (req.approvalMode === "manual" || req.approvalMode === "accept-edits") {
-    yield {
-      kind: "error",
-      message:
-        `approval mode "${req.approvalMode}" is not supported for remote claude leaves in v1 ` +
-        `(no approval back-channel over ssh yet) — use auto or bypass, fail-closed`,
-    };
-    return;
-  }
-
-  const args = ["claude", "-p", "--verbose", "--output-format", "stream-json"];
-  const sandboxWrites = req.sandbox === true && !req.readOnly;
-  if (sandboxWrites) {
-    args.push("--permission-mode", "acceptEdits");
-  } else if (req.approvalMode === "bypass" && !req.readOnly) {
-    args.push("--permission-mode", "bypassPermissions", "--dangerously-skip-permissions");
-  } else {
-    args.push("--permission-mode", "dontAsk");
-  }
-  const roots = sandboxRoots(req);
-  if (req.readOnly) args.push("--disallowedTools", READ_ONLY_DISALLOWED_TOOLS.join(","));
-  if (sandboxWrites) args.push("--setting-sources=", "--strict-mcp-config");
-  if (sandboxWrites) {
-    args.push(
-      "--settings",
-      JSON.stringify({
-        sandbox: {
-          enabled: true,
-          failIfUnavailable: true,
-          allowUnsandboxedCommands: false,
-          filesystem: { allowWrite: roots },
-        },
-      }),
-    );
-    for (const root of roots.slice(1)) args.push("--add-dir", root);
-  }
-  if (req.model) args.push("--model", req.model);
-  if (req.sessionId) args.push("--resume", req.sessionId);
-  if (req.system) args.push("--append-system-prompt", req.system);
-  if (req.schema) args.push("--json-schema", JSON.stringify(req.schema));
-
-  const proc = ctx.executor.spawn(args, { cwd: req.cwd, stdin: "pipe" });
-  const onAbort = () => proc.kill();
-  ctx.signal.addEventListener("abort", onAbort, { once: true });
-  if (ctx.signal.aborted) onAbort();
-  const stderrDone = drainStderr(proc.stderr, ctx.log);
-  const cancelStdoutGuard = guardPostExitDrain(proc.stdout, proc.exited, "stdout", ctx.log);
-  const cancelStderrGuard = guardPostExitDrain(proc.stderr, proc.exited, "stderr", ctx.log);
-
-  let stdinError: Error | undefined;
-  if (!proc.stdin) {
-    ctx.signal.removeEventListener("abort", onAbort);
-    proc.kill();
-    destroyStream(proc.stdout);
-    await stderrDone;
-    cancelStdoutGuard();
-    cancelStderrGuard();
-    yield { kind: "error", message: "remote claude stdin is unavailable" };
-    return;
-  }
-  proc.stdin.on("error", (err: Error) => {
-    stdinError = err;
-    if ((err as NodeJS.ErrnoException).code !== "EPIPE") proc.kill();
-  });
-  try {
-    proc.stdin.end(req.prompt);
-  } catch (err) {
-    stdinError = err instanceof Error ? err : new Error(String(err));
-    proc.kill();
-  }
-
-  yield { kind: "model", model: req.model, reasoningEffort: req.reasoningEffort };
-  let sawResult = false;
-  try {
-    try {
-      for await (const line of lines(proc.stdout)) {
-        let msg: Record<string, unknown>;
-        try {
-          msg = JSON.parse(line) as Record<string, unknown>;
-        } catch {
-          continue; // non-JSON noise
-        }
-        for (const ev of mapCliLine(msg)) {
-          if (ev.kind === "result") sawResult = true;
-          yield ev;
-        }
-      }
-    } finally {
-      cancelStdoutGuard();
-    }
-    const code = await proc.exited;
-    if (!sawResult) {
-      yield {
-        kind: "error",
-        message: stdinError
-          ? `remote claude stdin failed: ${stdinError.message}`
-          : `remote claude exited with code ${code} without a result`,
-      };
-    }
-  } finally {
-    ctx.signal.removeEventListener("abort", onAbort);
-    proc.kill();
-    await stderrDone;
-    cancelStdoutGuard();
-    cancelStderrGuard();
-  }
-}
-
-function* mapCliLine(msg: Record<string, unknown>): Iterable<HarnessEvent> {
-  const now = Date.now();
-  const type = msg.type as string;
-  if (type === "system" && msg.subtype === "init" && typeof msg.session_id === "string") {
-    yield { kind: "session", sessionId: msg.session_id };
-  } else if (type === "assistant") {
-    const content = (msg.message as { content?: unknown[] } | undefined)?.content;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        const b = block as { type?: string; id?: string; name?: string; input?: unknown };
-        if (b.type === "tool_use" && b.id && b.name) {
-          yield { kind: "tool-call-open", id: b.id, name: b.name, input: b.input as Json, atMs: now };
-        }
-      }
-    }
-  } else if (type === "user") {
-    const content = (msg.message as { content?: unknown[] } | undefined)?.content;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        const b = block as { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
-        if (b.type === "tool_result" && b.tool_use_id) {
-          yield {
-            kind: "tool-call-close",
-            id: b.tool_use_id,
-            status: b.is_error ? "error" : "ok",
-            result: toolResultText(b.content),
-            atMs: now,
-          };
-        }
-      }
-    }
-  } else if (type === "result") {
-    const usage = msg.usage as { input_tokens?: number; output_tokens?: number } | undefined;
-    yield {
-      kind: "usage",
-      tokensIn: usage?.input_tokens,
-      tokensOut: usage?.output_tokens,
-      costUsd: msg.total_cost_usd as number | undefined,
-    };
-    if (msg.subtype === "success") {
-      if (msg.structured_output !== undefined) {
-        yield { kind: "result", output: msg.structured_output as Json };
-      } else {
-        yield { kind: "result", output: extractJson(String(msg.result ?? "")) };
-      }
-    } else {
-      yield { kind: "error", message: `claude leaf failed: ${String(msg.subtype)}` };
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-async function* lines(stream: NodeJS.ReadableStream): AsyncIterable<string> {
-  let buf = "";
-  try {
-    for await (const chunk of stream) {
-      buf += chunk.toString();
-      let idx: number;
-      while ((idx = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
-        if (line) yield line;
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ERR_STREAM_PREMATURE_CLOSE") throw err;
-  }
-  if (buf.trim()) yield buf.trim();
-}
-
 function sandboxRoots(req: LeafRequest): string[] {
   return [
     ...new Set(
@@ -525,56 +329,6 @@ function pathWithin(target: string, roots: string[], cwd: string): boolean {
     const rel = path.relative(root, candidate);
     return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
   });
-}
-
-function guardPostExitDrain(
-  stream: NodeJS.ReadableStream,
-  exited: Promise<number>,
-  name: string,
-  log: (message: string) => void,
-): () => void {
-  let cancelled = false;
-  let timer: NodeJS.Timeout | undefined;
-  void exited.then(() => {
-    if (cancelled) return;
-    timer = setTimeout(() => {
-      log(`remote claude ${name} remained open after exit; stopping drain`);
-      destroyStream(stream);
-    }, POST_EXIT_DRAIN_MS);
-    timer.unref?.();
-  });
-  return () => {
-    cancelled = true;
-    if (timer) clearTimeout(timer);
-  };
-}
-
-function destroyStream(stream: NodeJS.ReadableStream): void {
-  (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
-}
-
-async function drainStderr(
-  stream: NodeJS.ReadableStream,
-  log: (message: string) => void,
-): Promise<void> {
-  let buf = "";
-  try {
-    for await (const chunk of stream) {
-      buf += chunk.toString();
-      let idx: number;
-      while ((idx = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
-        if (line) log(line);
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ERR_STREAM_PREMATURE_CLOSE") {
-      log(`remote claude stderr read failed: ${String(err)}`);
-    }
-  } finally {
-    if (buf.trim()) log(buf.trim());
-  }
 }
 
 /** Normalize a tool_result content field into a bounded string for the trace. */

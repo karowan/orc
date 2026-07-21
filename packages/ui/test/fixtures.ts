@@ -13,7 +13,6 @@ export function makeManifest(runId: string, over: Partial<RunManifest> = {}): Ru
     programPath: "/tmp/program.ts",
     programSha256: "deadbeefdeadbeef",
     cwd: "/tmp/work",
-    host: "build@ci-box",
     brief: "do the thing",
     allowWrites: true,
     approvalMode: "manual",
@@ -60,7 +59,7 @@ export function makeTraces(runId: string): TraceRecord[] {
     },
     {
       t: "leaf", seq: 2, attempt: 1, rev: 0, status: "running", id: "build", phase: "build",
-      kind: "agent", harness: "claude", host: "build@ci-box", readOnly: false, startMs: T0 + 12_000,
+      kind: "agent", harness: "claude", readOnly: false, startMs: T0 + 12_000,
       prompt: "build it",
     },
     {

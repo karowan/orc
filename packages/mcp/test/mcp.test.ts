@@ -43,7 +43,6 @@ describe("orc mcp (stdio)", () => {
       };
       expect(launchSchema.required).toContain("programPath");
       expect(launchSchema.required).toContain("brief");
-      expect(launchSchema.properties).toHaveProperty("host");
       expect(launchSchema.properties).toHaveProperty("cwd");
 
       // calls work end-to-end over stdio

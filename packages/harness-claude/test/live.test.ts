@@ -9,7 +9,6 @@ const LIVE = process.env.ORC_CLAUDE_LIVE === "1";
 
 // Minimal local executor good enough for discover(); invoke() uses the SDK.
 const localExec = {
-  host: undefined as string | undefined,
   spawn(): never {
     throw new Error("not needed");
   },
@@ -73,26 +72,4 @@ describe.skipIf(!LIVE)("claude harness (live)", () => {
     expect(caps.available).toBe(true);
     expect(caps.version).toMatch(/\d+\.\d+/);
   }, 60_000);
-});
-
-describe("claude harness (offline)", () => {
-  it("remote manual mode fails closed", async () => {
-    const req: LeafRequest = {
-      runId: "r",
-      seq: 0,
-      prompt: "x",
-      system: "s",
-      brief: "b",
-      readOnly: true,
-      cwd: "/tmp",
-      host: "somewhere",
-      approvalMode: "manual",
-      idleTimeoutMs: false,
-    };
-    const events: HarnessEvent[] = [];
-    for await (const ev of claudeHarness.invoke(req, ctx())) events.push(ev);
-    expect(events).toHaveLength(1);
-    expect(events[0].kind).toBe("error");
-    expect((events[0] as Extract<HarnessEvent, { kind: "error" }>).message).toMatch(/fail-closed/);
-  });
 });

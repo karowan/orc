@@ -15,10 +15,8 @@ export interface AgentOptions {
   schema?: Json;
   /** Default true. false requires the run's allow-writes grant (fail-closed). */
   readOnly?: boolean;
-  /** Plain path on the leaf's host. Defaults to the run cwd. */
+  /** Plain path. Defaults to the run cwd. */
   cwd?: string;
-  /** SSH destination (separate field — never a URI). Defaults to the run host. */
-  host?: string;
   /** Output-idle watchdog for this call, ms; false disables. */
   idleTimeout?: number | false;
   phase?: string;

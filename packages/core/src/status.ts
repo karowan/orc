@@ -72,7 +72,6 @@ export function projectStatus(
     const currentAttempt = leaf.attempt ?? 0;
     if (tr.attempt < currentAttempt) continue;
     leaf.harness = tr.harness;
-    leaf.host = tr.host;
     leaf.startMs = tr.startMs;
     leaf.endMs = tr.endMs;
     if (tr.status === "running" && (tr.attempt > currentAttempt || leaf.status === "pending")) {

@@ -120,9 +120,9 @@ export class Orc {
     return new OrcRun(this, runId);
   }
 
-  async capabilities(host?: string): Promise<unknown> {
+  async capabilities(): Promise<unknown> {
     const ctx = await this.ctx();
-    return capabilitiesOp.handler({ host, refresh: false }, ctx);
+    return capabilitiesOp.handler({ refresh: false }, ctx);
   }
 
   run(runId: string): OrcRun {

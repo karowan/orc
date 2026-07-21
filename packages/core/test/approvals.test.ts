@@ -29,7 +29,7 @@ const approvalHarness: Harness = {
 };
 
 function registry(): Registry {
-  return { harnesses: new Map([["appr", approvalHarness]]), extensions: new Map(), defaultHarness: "appr", executorFor: () => fakeExecutor };
+  return { harnesses: new Map([["appr", approvalHarness]]), extensions: new Map(), defaultHarness: "appr", executor: fakeExecutor };
 }
 
 async function launch(reg: Registry) {

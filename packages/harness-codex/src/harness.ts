@@ -1,8 +1,7 @@
 /**
  * codex harness: drives `codex app-server` (codex-cli 0.144.x) over
- * newline-delimited JSON-RPC on stdio. The server process is spawned THROUGH
- * the provided executor, so the same harness works locally and over ssh —
- * JSON-RPC simply flows through the ssh pipes.
+ * newline-delimited JSON-RPC on stdio. The server process is spawned through
+ * the provided executor.
  *
  * Wire protocol notes (verified empirically against codex-cli 0.144.5 and its
  * `codex app-server generate-json-schema` output):

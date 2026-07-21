@@ -620,11 +620,9 @@ function renderLeafRow(
 
   const harness = leaf.harness ?? tr?.harness;
   const model = tr?.model ? tr.model.replace(/^claude-/, "") : undefined;
-  const host = leaf.host ?? tr?.host;
   const rt2 = queued
     ? "queued"
-    : [harness, model].filter(Boolean).map((v) => escapeHtml(String(v))).join(" · ") +
-      (host ? ` <span class="seq">@${escapeHtml(host)}</span>` : "");
+    : [harness, model].filter(Boolean).map((v) => escapeHtml(String(v))).join(" · ");
 
   // track
   const start = leaf.startMs ?? tr?.startMs;
@@ -694,9 +692,7 @@ function renderDock(status: RunStatus, approvals: ApprovalRequest[], interactive
   if (!a) return "";
   const leaf = status.leaves.find((l) => l.seq === a.seq);
   const arg = escapeHtml(bound(toolArgPreview(a.input), 200).replace(/\n/g, " "));
-  const where = leaf
-    ? ` · ${leaf.readOnly ? "read-only" : "write"} leaf${leaf.host ? ` on @${escapeHtml(leaf.host)}` : ""}`
-    : "";
+  const where = leaf ? ` · ${leaf.readOnly ? "read-only" : "write"} leaf` : "";
   return `<div class="dock" data-approval="${escapeHtml(a.id)}">
 <div class="dk-line"><span class="gate-tag">GATE</span><span class="dk-tool">${leaf ? `${leaf.kind}#${leaf.seq} · ` : ""}${escapeHtml(a.toolName)}</span><span class="dk-arg">${arg}</span></div>
 <div class="dk-line"><span class="dk-wait">waiting <span class="wait-v" data-since="${a.requestedAtMs}">${fmtDuration(nowMs - a.requestedAtMs)}</span>${where}</span></div>
@@ -751,8 +747,7 @@ function renderLaneContent(
   } else {
     meta.push(`<span class="k">started</span><span class="v">queued</span>`);
   }
-  const host = leaf.host ?? tr?.host;
-  meta.push(`<span class="k">cwd</span><span class="v">${escapeHtml(tr?.cwd ?? view.manifest.cwd)} · ${host ? "@" + escapeHtml(host) : "local"}</span>`);
+  meta.push(`<span class="k">cwd</span><span class="v">${escapeHtml(tr?.cwd ?? view.manifest.cwd)}</span>`);
   const idle = view.manifest.idleTimeoutMs === false ? "disabled" : `${Math.round((view.manifest.idleTimeoutMs as number) / 60000)}m`;
   meta.push(`<span class="k">idle timeout</span><span class="v">${idle}</span>`);
 
@@ -988,10 +983,10 @@ ${renderRunBody({ ...opts, interactive: true, selectedSeq: opts.selectedSeq })}
 
 export function renderIndexPage(runs: RunManifest[]): string {
   const content = runs.length
-    ? `<table><thead><tr><th>run</th><th>name</th><th>harness</th><th>host</th><th>created</th></tr></thead><tbody>
+    ? `<table><thead><tr><th>run</th><th>name</th><th>harness</th><th>created</th></tr></thead><tbody>
 ${runs
   .map(
-    (m) => `<tr><td><a class="mono" href="/runs/${encodeURIComponent(m.runId)}">${escapeHtml(m.runId)}</a></td><td>${m.name ? escapeHtml(m.name) : ""}</td><td>${escapeHtml(m.defaultHarness)}</td><td>${m.host ? escapeHtml(m.host) : "local"}</td><td class="empty">${new Date(m.createdAtMs).toISOString().slice(0, 19).replace("T", " ")}</td></tr>`,
+    (m) => `<tr><td><a class="mono" href="/runs/${encodeURIComponent(m.runId)}">${escapeHtml(m.runId)}</a></td><td>${m.name ? escapeHtml(m.name) : ""}</td><td>${escapeHtml(m.defaultHarness)}</td><td class="empty">${new Date(m.createdAtMs).toISOString().slice(0, 19).replace("T", " ")}</td></tr>`,
   )
   .join("\n")}
 </tbody></table>`
