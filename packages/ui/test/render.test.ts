@@ -81,7 +81,7 @@ describe("renderReportHtml (responsive design)", () => {
     // small screens get the bottom dock for the same approval
     expect(html).toMatch(/class="dock" data-approval="appr_1"/);
     expect(html).toContain("agent#2 · Bash");
-    expect(html).toContain("write leaf on @build@ci-box");
+    expect(html).toContain("write leaf");
     // static page: the note, no working buttons
     expect(html).toContain("orc approvals");
     expect(html).not.toContain("orcApprove(");
@@ -121,8 +121,6 @@ describe("renderReportHtml (responsive design)", () => {
     expect(html).toMatch(/class="eff high"[^>]*>high</);
     expect(html).toContain('class="dot ok"');
     expect(html).toContain('class="dot error"');
-    // host appears on the remote leaf's row
-    expect(html).toContain("build@ci-box");
   });
 
   it("report shows the cost tile but no endless bottom detail stack", () => {

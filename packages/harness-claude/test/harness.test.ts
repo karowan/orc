@@ -1,6 +1,5 @@
-import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import type { Executor, HarnessContext, HarnessEvent, LeafRequest, Proc } from "@orc/core";
+import type { Executor, HarnessContext, HarnessEvent, LeafRequest } from "@orc/core";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
 const sdk = vi.hoisted(() => ({ query: vi.fn() }));
@@ -41,7 +40,6 @@ async function collect(request: LeafRequest, ctx: HarnessContext): Promise<Harne
 }
 
 const unusedExecutor = {
-  host: undefined,
   spawn(): never {
     throw new Error("not used");
   },
@@ -145,156 +143,5 @@ describe("claude local policy", () => {
     expect(options.permissionMode).toBe("default");
     expect(options.allowDangerouslySkipPermissions).toBeUndefined();
     expect(options.canUseTool).toBeTypeOf("function");
-  });
-});
-
-class RemoteExecutor implements Executor {
-  readonly host = "remote";
-  args: string[] | undefined;
-  spawns = 0;
-
-  constructor(
-    private readonly stdinFactory: () => Writable = () => new PassThrough(),
-    private readonly holdPipesOpen = false,
-  ) {}
-
-  spawn(cmd: string[]): Proc {
-    this.spawns++;
-    this.args = cmd;
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const stdin = this.stdinFactory();
-    let exit!: (code: number) => void;
-    const exited = new Promise<number>((resolve) => (exit = resolve));
-    setImmediate(() => {
-      const result =
-        JSON.stringify({
-          type: "result",
-          subtype: "success",
-          result: '{"ok":true}',
-        }) + "\n";
-      if (this.holdPipesOpen) stdout.write(result);
-      else stdout.end(result);
-      exit(0);
-      if (!this.holdPipesOpen) setImmediate(() => stderr.end("late remote trace\n"));
-    });
-    return { stdin, stdout, stderr, exited, kill: () => exit(-1), pid: 1 };
-  }
-
-  async run() {
-    throw new Error("not used");
-  }
-  async exists() {
-    return false;
-  }
-  async readFile() {
-    throw new Error("not used");
-  }
-  async writeFile() {}
-}
-
-describe("claude remote transport", () => {
-  it("keeps configured MCPs in read-only mode while disabling direct command and write tools", async () => {
-    const executor = new RemoteExecutor();
-
-    await collect(
-      req({ host: "remote", approvalMode: "bypass", sandbox: true }),
-      context(executor),
-    );
-
-    expect(executor.args!.some((arg) => arg.startsWith("--setting-sources"))).toBe(false);
-    expect(executor.args).not.toContain("--strict-mcp-config");
-    expect(executor.args).toEqual(expect.arrayContaining(["--permission-mode", "dontAsk"]));
-    expect(executor.args).not.toContain("bypassPermissions");
-    expect(executor.args).not.toContain("--dangerously-skip-permissions");
-    const disallowedIndex = executor.args!.indexOf("--disallowedTools");
-    expect(executor.args!.slice(disallowedIndex, disallowedIndex + 2)).toEqual([
-      "--disallowedTools",
-      "Bash,Edit,Write,NotebookEdit",
-    ]);
-  });
-
-  it("uses native sandbox settings, declares extra roots, and drains stderr after exit", async () => {
-    const executor = new RemoteExecutor();
-    const logs: string[] = [];
-    const events = await collect(
-      req({
-        host: "remote",
-        readOnly: false,
-        approvalMode: "bypass",
-        sandbox: true,
-        sandboxDirs: ["/cache"],
-      }),
-      context(executor, undefined, logs),
-    );
-
-    expect(events.some((event) => event.kind === "result")).toBe(true);
-    expect(executor.args).toContain("--setting-sources=");
-    expect(executor.args).toContain("--strict-mcp-config");
-    expect(executor.args).toContain("acceptEdits");
-    expect(executor.args).not.toContain("--dangerously-skip-permissions");
-    expect(executor.args).toContain("--add-dir");
-    expect(executor.args).toContain("/cache");
-    const settingsIndex = executor.args!.indexOf("--settings");
-    expect(settingsIndex).toBeGreaterThan(-1);
-    expect(JSON.parse(executor.args![settingsIndex + 1])).toEqual({
-      sandbox: {
-        enabled: true,
-        failIfUnavailable: true,
-        allowUnsandboxedCommands: false,
-        filesystem: { allowWrite: ["/workspace", "/cache"] },
-      },
-    });
-    expect(logs).toContain("late remote trace");
-  });
-
-  it("does not spawn for an already-aborted request", async () => {
-    const executor = new RemoteExecutor();
-    const controller = new AbortController();
-    controller.abort("cancelled");
-
-    const events = await collect(req({ host: "remote" }), context(executor, controller.signal));
-
-    expect(executor.spawns).toBe(0);
-    expect(events).toEqual([{ kind: "error", message: "aborted: cancelled" }]);
-  });
-
-  it("handles EPIPE from a child that closes stdin", async () => {
-    const executor = new RemoteExecutor(
-      () =>
-        new (class extends Writable {
-          override _write(_chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
-            callback(Object.assign(new Error("closed"), { code: "EPIPE" }));
-          }
-        })(),
-    );
-
-    const events = await collect(req({ host: "remote" }), context(executor));
-
-    expect(events.some((event) => event.kind === "result")).toBe(true);
-  });
-
-  it("bounds post-exit draining when descendants retain stdout and stderr", async () => {
-    vi.useFakeTimers();
-    try {
-      const logs: string[] = [];
-      const pending = collect(
-        req({ host: "remote" }),
-        context(new RemoteExecutor(undefined, true), undefined, logs),
-      );
-
-      await vi.advanceTimersByTimeAsync(10_001);
-      const events = await pending;
-
-      expect(events.some((event) => event.kind === "result")).toBe(true);
-      expect(logs).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining("stdout remained open"),
-          expect.stringContaining("stderr remained open"),
-        ]),
-      );
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

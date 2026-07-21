@@ -46,9 +46,11 @@ describe("open monitor discovery", () => {
         harnesses: new Map(),
         extensions: new Map(),
         defaultHarness: "none",
-        executorFor() {
-          throw new Error("not used");
-        },
+        executor: new Proxy({} as never, {
+          get() {
+            throw new Error("not used");
+          },
+        }),
       },
     });
     expect(result.url).toBe(started.url);

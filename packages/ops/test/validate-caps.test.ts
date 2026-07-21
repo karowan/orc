@@ -9,13 +9,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type {
-  Executor,
   ExtensionLeaf,
   Harness,
   HarnessCapabilities,
   Registry,
 } from "@orc/core";
-import { executorFor } from "@orc/executors";
+import { LocalExecutor } from "@orc/executors";
 import { validate, type OpContext } from "@orc/ops";
 
 // A harness whose catalog carries one model with a ladder and one that takes
@@ -47,11 +46,12 @@ const fakeHarness: Harness = {
   },
 };
 
+const localExecutor = new LocalExecutor();
 const registry: Registry = {
   harnesses: new Map<string, Harness>([[fakeHarness.name, fakeHarness]]),
   extensions: new Map(),
   defaultHarness: "fake",
-  executorFor: (host?: string): Executor => executorFor(host),
+  executor: localExecutor,
 };
 const ctx: OpContext = { registry };
 
@@ -177,7 +177,7 @@ describe("validate --check-capabilities (per-model reasoning efforts)", () => {
       ...fakeHarness,
       name: "plain",
       async discover() {
-        return { ...(await fakeHarness.discover({ executor: executorFor(undefined) })), structuredOutput: false };
+        return { ...(await fakeHarness.discover({ executor: localExecutor })), structuredOutput: false };
       },
     };
     const res = await validate.handler(
@@ -197,37 +197,13 @@ describe("validate --check-capabilities (per-model reasoning efforts)", () => {
     expect(res.problems.join("\n")).toContain('harness "plain" does not support structured output');
   });
 
-  it("probes the per-call host rather than the validate-wide host", async () => {
-    const hosts: Array<string | undefined> = [];
-    const res = await validate.handler(
-      {
-        programPath: programFor(`{ harness: "fake", host: "leaf@box" }`),
-        allowWrites: false,
-        host: "default@box",
-        checkCapabilities: true,
-      },
-      {
-        registry: {
-          ...registry,
-          executorFor(host) {
-            hosts.push(host);
-            return executorFor(undefined);
-          },
-        },
-      },
-    );
-    expect(res.ok).toBe(true);
-    expect(hosts).toEqual(["leaf@box"]);
-    expect(res.firstCalls[0]?.host).toBe("leaf@box");
-  });
-
   it("uses launch-equivalent default harness and approval mode", async () => {
     const manualOnly: Harness = {
       ...fakeHarness,
       name: "manual-only",
       async discover() {
         return {
-          ...(await fakeHarness.discover({ executor: executorFor(undefined) })),
+          ...(await fakeHarness.discover({ executor: localExecutor })),
           approvalModes: ["manual"],
         };
       },

@@ -29,8 +29,7 @@ export interface ApprovalDecision {
 }
 
 // ---------------------------------------------------------------------------
-// Executor — local | ssh host. cwd is ALWAYS a plain path; host is a separate
-// field (never concatenated into a URI).
+// Executor — spawns leaf processes on the local host. cwd is ALWAYS a plain path.
 // ---------------------------------------------------------------------------
 export interface SpawnOptions {
   cwd?: string;
@@ -50,8 +49,6 @@ export interface Proc {
 }
 
 export interface Executor {
-  /** undefined for local; the ssh destination string otherwise (e.g. "build@ci-box"). */
-  readonly host: string | undefined;
   spawn(cmd: string[], opts?: SpawnOptions): Proc;
   /** Run a command to completion, capturing output. */
   run(
@@ -98,7 +95,6 @@ export interface LeafRequest {
   reasoningEffort?: string;
   readOnly: boolean;
   cwd: string; // plain path, resolved by the supervisor
-  host?: string; // ssh destination; undefined = local
   approvalMode: ApprovalMode;
   sessionId?: string;
   idleTimeoutMs?: number | false; // per-call output-idle watchdog; false disables
@@ -171,7 +167,6 @@ export interface ThunkSpec {
   schema?: Json;
   readOnly: boolean;
   cwd?: string; // per-call override (plain path)
-  host?: string; // per-call override (ssh destination)
   phase?: string;
   idleTimeoutMs?: number | false;
   groupId?: string; // parallel() sibling-abort group
@@ -281,7 +276,6 @@ export interface LeafTraceRecord {
   harness?: string;
   model?: string; // resolved model (as the harness reports it actually ran)
   reasoningEffort?: string; // resolved reasoning level
-  host?: string;
   cwd?: string;
   readOnly: boolean;
   startMs: number;
@@ -333,7 +327,6 @@ export interface RunManifest {
   programPath: string;
   programSha256: string;
   cwd: string; // canonicalized
-  host?: string;
   brief: string;
   allowWrites: boolean;
   approvalMode: ApprovalMode;
@@ -358,7 +351,6 @@ export interface LeafStatus {
   status: "pending" | "running" | "ok" | "error";
   readOnly: boolean;
   harness?: string;
-  host?: string;
   startMs?: number;
   endMs?: number;
   error?: string;

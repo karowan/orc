@@ -11,7 +11,6 @@ export interface HarnessBinaryReport {
 }
 
 export interface DoctorReport {
-  host: string | undefined;
   harnesses: HarnessBinaryReport[];
 }
 
@@ -19,9 +18,7 @@ const CHECK_TIMEOUT_MS = 15_000;
 
 /**
  * Check that each named harness binary (e.g. "claude", "codex") resolves on
- * the executor's host and report its version. SshExecutor already wraps
- * commands in a login shell, so a plain `which` sees the user's real PATH on
- * both local and remote hosts.
+ * PATH and report its version.
  */
 export async function doctor(
   executor: Executor,
@@ -48,10 +45,10 @@ export async function doctor(
       harnesses.push({ name, found: false, error: String(err) });
     }
   }
-  return { host: executor.host, harnesses };
+  return { harnesses };
 }
 
-/** Does the given working directory exist on the executor's host? */
+/** Does the given working directory exist? */
 export async function checkCwd(executor: Executor, cwd: string): Promise<boolean> {
   return executor.exists(cwd);
 }

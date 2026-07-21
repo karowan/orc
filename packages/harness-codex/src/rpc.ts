@@ -24,8 +24,7 @@ export interface JsonRpcClientOptions {
 
 /**
  * Minimal newline-delimited JSON-RPC 2.0 client over a Proc's stdio.
- * Hand-rolled on purpose: the same client works locally and across ssh,
- * because the executor provides the pipes.
+ * Hand-rolled on purpose: the executor provides the pipes.
  */
 export class JsonRpcClient {
   private nextId = 1;

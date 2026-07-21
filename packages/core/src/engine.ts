@@ -98,7 +98,6 @@ const BOOTSTRAP = String.raw`
       schema: o.schema,
       readOnly: o.readOnly === false ? false : true,
       cwd: o.cwd,
-      host: o.host,
       phase: o.phase,
       idleTimeoutMs: normTimeout(o.idleTimeout),
       groupId: o.__groupId,

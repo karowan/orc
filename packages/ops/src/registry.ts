@@ -6,7 +6,7 @@
  */
 import { callerAffinity, loadConfig, type Harness, type OrcConfig } from "@orc/core";
 import type { Registry } from "@orc/core";
-import { executorFor } from "@orc/executors";
+import { LocalExecutor } from "@orc/executors";
 import { claudeHarness } from "@orc/harness-claude";
 import { codexHarness, createCodexHarness } from "@orc/harness-codex";
 import { makeExecHarness } from "./exec-harness.js";
@@ -39,5 +39,5 @@ export async function buildRegistry(opts: RegistryOptions = {}): Promise<Registr
     config.defaultHarness ??
     callerAffinity(opts.mcpClientName) ??
     "codex";
-  return { harnesses, extensions, defaultHarness, executorFor };
+  return { harnesses, extensions, defaultHarness, executor: new LocalExecutor() };
 }

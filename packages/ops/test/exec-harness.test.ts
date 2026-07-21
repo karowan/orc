@@ -4,7 +4,6 @@ import { makeExecHarness } from "@orc/ops";
 
 function executorReturning(stdout: string): Executor {
   return {
-    host: undefined,
     async run() {
       return { code: 0, stdout, stderr: "" };
     },

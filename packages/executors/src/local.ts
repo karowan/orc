@@ -14,7 +14,6 @@ export interface LocalExecutorOptions {
  * then SIGKILL after a grace period) so grandchildren cannot leak.
  */
 export class LocalExecutor implements Executor {
-  readonly host: string | undefined = undefined;
   private readonly killGraceMs: number;
 
   constructor(opts?: LocalExecutorOptions) {

@@ -3,7 +3,7 @@
 A lightweight TypeScript orchestration runtime.
 Model-authored **promise-native** programs whose `agent()` calls become
 journaled, run-once leaf executions, with deterministic replay/resume, live
-monitoring, per-call SSH-remote working directories, and pluggable harnesses.
+monitoring, and pluggable harnesses.
 State is plain per-run files.
 
 ## The idea
@@ -28,7 +28,7 @@ const program: Program = async ({ agent, parallel, phase }) => {
 
   return phase("synthesis", () =>
     agent(`Merge these plans: ${JSON.stringify(plans)}`, {
-      host: "build-box", cwd: "/srv/repo", readOnly: false, // a remote write leaf
+      cwd: "/srv/repo", readOnly: false, // a write leaf
     }));
 };
 export default program;
@@ -45,9 +45,9 @@ The canonical rationale, invariants, and accepted tradeoffs live in
 | Package | Role |
 |---|---|
 | `@orc/core` | The engine: QuickJS deterministic event loop, sequence identity, journal (WAL) + trace sidecar, content-addressed results, scheduler (`maxParallel`), policy caps, replay + fail-forward resume, supervisor. |
-| `@orc/executors` | `LocalExecutor` (process groups) and `SshExecutor` (system `ssh`, honours `~/.ssh/config`). One `Executor` interface; `cwd` and `host` are separate fields. |
-| `@orc/harness-claude` | Built-in harness: Anthropic Agent SDK locally, claude CLI stream-json over ssh for remote hosts. |
-| `@orc/harness-codex` | Built-in harness: `codex app-server` JSON-RPC, run through the executor so it works locally **and** over ssh unchanged. |
+| `@orc/executors` | `LocalExecutor`: process-group spawning with TERM→KILL teardown, behind one `Executor` interface. |
+| `@orc/harness-claude` | Built-in harness: the Anthropic Agent SDK (approval bridging, structured output, session resume). |
+| `@orc/harness-codex` | Built-in harness: `codex app-server` JSON-RPC, run through the executor. |
 | `@orc/ops` | The zod-first operation registry — canonical definitions for registry-backed commands and tools. Plus registry assembly (zero-config built-ins). |
 | `@orc/cli` | `orc …` — every command is a runtime interpretation of the registry (flags, help, `orc commands --json` all derived). |
 | `@orc/mcp` | stdio MCP server; the same ops as tools, zod schemas native, `readOnlyHint` discipline. |
@@ -75,14 +75,14 @@ The canonical rationale, invariants, and accepted tradeoffs live in
 ## CLI
 
 ```
-orc launch --program-path p.orc.ts --brief "..." [--host frank --cwd /path] [--allow-writes] [--wait]
+orc launch --program-path p.orc.ts --brief "..." [--cwd /path] [--allow-writes] [--wait]
 orc validate --program-path p.orc.ts    # compile + first-frontier preview, no run
 orc status --run-id <id>                 # body-free projection
 orc wait --run-id <id> --timeout-seconds 300
 orc get-result --run-id <id> [--seq N]
 orc resume --run-id <id> [--wait]        # fail-forward, re-orients write leaves
-orc capabilities [--host frank]          # harnesses → models → efforts, natively discovered
-orc doctor --host frank --cwd /path      # preflight binaries/versions/cwd
+orc capabilities                         # harnesses → models → efforts, natively discovered
+orc doctor --cwd /path                   # preflight binaries/versions/cwd
 orc open --run-id <id> [--browser]       # ensure the monitor, print the URL
 orc report --run-id <id>                 # (re)write report.html
 orc ui                                   # foreground live monitor
@@ -116,8 +116,8 @@ There is deliberately no ambient plugin scanning.
 npm install
 npx vitest run                          # unit + determinism + kill-9 + MCP stdio
 # live (gated):
-ORC_CODEX_LIVE=1 ORC_CLAUDE_LIVE=1 ORC_SSH_TEST_HOST=frank npx vitest run
+ORC_CODEX_LIVE=1 ORC_CLAUDE_LIVE=1 npx vitest run
 ```
 
-Status: v0.1 — full pipeline works end to end (local + ssh, both harnesses,
-write leaves, resume, monitor). See `examples/smoke.orc.ts`.
+Status: v0.1 — full pipeline works end to end (both harnesses, write leaves,
+resume, monitor). See `examples/smoke.orc.ts`.

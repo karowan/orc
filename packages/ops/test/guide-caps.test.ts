@@ -6,12 +6,11 @@
  */
 import { describe, expect, it } from "vitest";
 import type {
-  Executor,
   Harness,
   HarnessCapabilities,
   Registry,
 } from "@orc/core";
-import { executorFor } from "@orc/executors";
+import { LocalExecutor } from "@orc/executors";
 import { guide, GUIDE, type OpContext } from "@orc/ops";
 
 const fakeHarness: Harness = {
@@ -39,7 +38,7 @@ const registry: Registry = {
   harnesses: new Map<string, Harness>([[fakeHarness.name, fakeHarness]]),
   extensions: new Map(),
   defaultHarness: "fake",
-  executorFor: (host?: string): Executor => executorFor(host),
+  executor: new LocalExecutor(),
 };
 const ctx: OpContext = { registry };
 

@@ -57,13 +57,12 @@ export interface Registry {
   harnesses: Map<string, Harness>;
   extensions: Map<string, ExtensionLeaf>;
   defaultHarness: string;
-  executorFor(host: string | undefined): Executor;
+  executor: Executor;
 }
 
 export interface LaunchOptions {
   programPath: string;
   cwd?: string;
-  host?: string;
   brief: string;
   allowWrites?: boolean;
   approvalMode?: RunManifest["approvalMode"];
@@ -90,16 +89,8 @@ export function sourceRequestsWrite(source: string): boolean {
 
 export async function prepareRun(opts: LaunchOptions, registry: Registry): Promise<RunManifest> {
   const { bundle, sha256 } = await compileProgram(opts.programPath);
-  // For local runs, canonicalize + validate the cwd against the local FS. For
-  // remote (host) runs the cwd lives on the remote host — keep it as an
-  // absolute path and let `orc doctor --host` / the leaf validate existence.
-  let cwd: string;
-  if (opts.host) {
-    cwd = opts.cwd ?? ".";
-  } else {
-    cwd = fs.realpathSync(path.resolve(opts.cwd ?? process.cwd()));
-    if (!fs.statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${cwd}`);
-  }
+  const cwd = fs.realpathSync(path.resolve(opts.cwd ?? process.cwd()));
+  if (!fs.statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${cwd}`);
   const brief = opts.brief?.trim();
   if (!brief) throw new Error("brief is required");
   if (opts.budgetUsd !== undefined && !(opts.budgetUsd > 0)) {
@@ -111,7 +102,6 @@ export async function prepareRun(opts: LaunchOptions, registry: Registry): Promi
     programPath: path.resolve(opts.programPath),
     programSha256: sha256,
     cwd,
-    host: opts.host,
     brief,
     allowWrites: opts.allowWrites ?? false,
     approvalMode: opts.approvalMode ?? "auto",
@@ -737,9 +727,8 @@ class Supervisor {
   // -------------------------------------------------------------------------
   private async executeLeaf(leaf: InflightLeaf): Promise<LeafOutcome["outcome"]> {
     const { spec, seq, attempt } = leaf;
-    const host = spec.host ?? this.manifest.host;
     const cwd = spec.cwd ?? this.manifest.cwd;
-    const executor = this.registry.executorFor(host);
+    const executor = this.registry.executor;
     let rev = 0;
     const startMs = Date.now();
     const toolCalls = new Map<string, ToolCallTrace>();
@@ -759,7 +748,6 @@ class Supervisor {
       phase: spec.phase,
       kind: spec.kind,
       harness: spec.kind === "agent" ? (spec.harness ?? this.manifest.defaultHarness) : undefined,
-      host,
       cwd,
       readOnly: spec.readOnly,
       startMs,
@@ -834,7 +822,6 @@ class Supervisor {
         reasoningEffort: spec.reasoningEffort,
         readOnly: spec.readOnly,
         cwd,
-        host,
         approvalMode: this.manifest.approvalMode,
         idleTimeoutMs: leaf.idleTimeoutMs,
         sandbox: this.manifest.sandbox,
@@ -1109,7 +1096,7 @@ function isRetryable(error: string): boolean {
   // model call and delays the real failure. Config/routing errors plus the
   // structured-output schema rejections (OpenAI/codex strict mode) are all
   // author-fixable, not transient.
-  return !/unknown harness|unknown extension|unregistered extension|fails inputSchema|not supported for remote|allow_writes|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|output[\s_-]?schema|result exceeds cap|result is not valid JSON/i.test(
+  return !/unknown harness|unknown extension|unregistered extension|fails inputSchema|allow_writes|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|output[\s_-]?schema|result exceeds cap|result is not valid JSON/i.test(
     error,
   );
 }

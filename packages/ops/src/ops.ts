@@ -62,7 +62,6 @@ interface FirstFrontierCall {
   id?: string;
   readOnly: boolean;
   harness?: string;
-  host?: string;
   model?: string;
   reasoningEffort?: string;
   schema?: Json;
@@ -77,7 +76,6 @@ export const launch = defineOp({
   input: z.object({
     programPath: z.string().describe("path to the program (.orc.ts/.ts/.js)"),
     cwd: z.string().optional().describe("working directory (plain path); defaults to the caller's cwd"),
-    host: z.string().optional().describe("SSH destination (separate field; e.g. 'build@ci-box' or an ssh-config alias)"),
     brief: z.string().describe("shared context injected into every leaf"),
     allowWrites: z.boolean().default(false).describe("grant write-declared leaves permission to mutate files"),
     approvalMode: ApprovalMode.default("auto").describe("manual | accept-edits | auto | bypass"),
@@ -95,7 +93,6 @@ export const launch = defineOp({
       {
         programPath: input.programPath,
         cwd: input.cwd,
-        host: input.host,
         brief: input.brief,
         allowWrites: input.allowWrites,
         approvalMode: input.approvalMode,
@@ -144,7 +141,6 @@ export const validate = defineOp({
     allowWrites: z.boolean().default(false),
     approvalMode: ApprovalMode.default("auto").describe("check the first-frontier harnesses can honor this mode"),
     harness: z.string().optional().describe("default harness override (same precedence as launch)"),
-    host: z.string().optional().describe("check capabilities on this remote host"),
     checkCapabilities: z.boolean().default(true).describe("probe referenced harnesses for model/effort/mode support (slower)"),
   }),
   async handler(input, ctx) {
@@ -162,7 +158,6 @@ export const validate = defineOp({
             id: spec.id,
             readOnly: spec.readOnly,
             harness: spec.harness,
-            host: spec.host,
             model: spec.model,
             reasoningEffort: spec.reasoningEffort,
             schema: spec.schema,
@@ -181,19 +176,16 @@ export const validate = defineOp({
       vm?.dispose();
     }
 
-    // Host can change per leaf, so only share probes with the same effective
-    // harness and executor destination.
     const capsCache = new Map<string, Promise<HarnessCapabilities>>();
-    const capsFor = (harnessName: string, host: string | undefined): Promise<HarnessCapabilities> => {
-      const key = JSON.stringify([harnessName, host]);
-      const cached = capsCache.get(key);
+    const capsFor = (harnessName: string): Promise<HarnessCapabilities> => {
+      const cached = capsCache.get(harnessName);
       if (cached) return cached;
       const harness = ctx.registry.harnesses.get(harnessName);
       if (!harness) return Promise.reject(new Error(`unknown harness "${harnessName}"`));
       const pending = Promise.resolve().then(() =>
-        harness.discover({ executor: ctx.registry.executorFor(host) }),
+        harness.discover({ executor: ctx.registry.executor }),
       );
-      capsCache.set(key, pending);
+      capsCache.set(harnessName, pending);
       return pending;
     };
 
@@ -213,7 +205,6 @@ export const validate = defineOp({
       }
       if (call.kind === "agent") {
         const harnessName = call.harness ?? input.harness ?? ctx.registry.defaultHarness;
-        const host = call.host ?? input.host;
         const harness = ctx.registry.harnesses.get(harnessName);
         if (!harness) {
           problems.push(`call ${call.seq} uses unknown harness "${harnessName}" (available: ${[...ctx.registry.harnesses.keys()].join(", ")})`);
@@ -230,10 +221,10 @@ export const validate = defineOp({
         if (harness && input.checkCapabilities) {
           let caps: HarnessCapabilities;
           try {
-            caps = await capsFor(harnessName, host);
+            caps = await capsFor(harnessName);
           } catch (err) {
             problems.push(
-              `call ${call.seq}: could not discover harness "${harnessName}"${host ? ` on ${host}` : ""} (${String(err instanceof Error ? err.message : err)})`,
+              `call ${call.seq}: could not discover harness "${harnessName}" (${String(err instanceof Error ? err.message : err)})`,
             );
             continue;
           }
@@ -269,7 +260,7 @@ export const validate = defineOp({
             }
             const approvalMode = input.approvalMode ?? "auto";
             if (caps.approvalModes.length > 0 && !caps.approvalModes.includes(approvalMode)) {
-              problems.push(`call ${call.seq}: harness "${harnessName}" cannot honor approval mode "${approvalMode}"${host ? " over ssh" : ""} (supports: ${caps.approvalModes.join(", ")})`);
+              problems.push(`call ${call.seq}: harness "${harnessName}" cannot honor approval mode "${approvalMode}" (supports: ${caps.approvalModes.join(", ")})`);
             }
           }
         }
@@ -373,14 +364,14 @@ export const list = defineOp({
         } catch {
           /* partial run dir */
         }
-        return { runId: m.runId, name: m.name, state, createdAtMs: m.createdAtMs, host: m.host, cwd: m.cwd };
+        return { runId: m.runId, name: m.name, state, createdAtMs: m.createdAtMs, cwd: m.cwd };
       });
   },
 });
 
 export const cancel = defineOp({
   name: "cancel",
-  doc: "Queue cancellation. Local leaves get TERM→KILL; plain SSH only confirms channel teardown, so remote process state may be unknown.",
+  doc: "Queue cancellation. Leaves get TERM→KILL on their whole process group.",
   readOnly: false,
   input: z.object({ runId: RunId }),
   async handler(input) {
@@ -456,11 +447,10 @@ export const capabilities = defineOp({
   doc: "List harnesses, models, and reasoning levels — each discovered through the harness's native mechanism.",
   readOnly: true,
   input: z.object({
-    host: z.string().optional().describe("probe a remote host instead of local"),
     refresh: z.boolean().default(false),
   }),
   async handler(input, ctx) {
-    const executor = ctx.registry.executorFor(input.host);
+    const executor = ctx.registry.executor;
     const out: Record<string, unknown> = {};
     for (const [name, harness] of ctx.registry.harnesses) {
       out[name] = await harness.discover({ executor }).catch((err: unknown) => ({
@@ -469,7 +459,6 @@ export const capabilities = defineOp({
       }));
     }
     return {
-      host: input.host ?? "(local)",
       defaultHarness: ctx.registry.defaultHarness,
       harnesses: out,
       extensions: [...ctx.registry.extensions.keys()],
@@ -507,7 +496,6 @@ export const guide = defineOp({
   doc: "How to write and run an orc program — the authoring + usage guide, with this machine's live harness/model catalog appended.",
   readOnly: true,
   input: z.object({
-    host: z.string().optional().describe("probe this remote host's harnesses instead of local"),
     probe: z.boolean().default(true).describe("append the live capability catalog (set false for the static doc only)"),
   }),
   async handler(input, ctx) {
@@ -518,7 +506,7 @@ export const guide = defineOp({
     // break the guide — degrade to the static doc, which already points at
     // `orc capabilities`.
     const caps = await withDeadline(
-      capabilities.handler({ host: input.host, refresh: false }, ctx),
+      capabilities.handler({ refresh: false }, ctx),
       15_000,
     ).catch(() => null);
     return { guide: GUIDE + (caps ? renderCapabilitiesForGuide(caps) : "") };
@@ -537,7 +525,6 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 interface GuideCaps {
-  host: string;
   defaultHarness: string;
   harnesses: Record<string, HarnessCapabilities & { detail?: string }>;
 }
@@ -550,7 +537,7 @@ function renderCapabilitiesForGuide(caps: unknown): string {
     "",
     "## Available on this machine",
     "",
-    `Discovered live${c.host && c.host !== "(local)" ? ` on ${c.host}` : ""} — these are the valid \`harness\`, \`model\`, and`,
+    "Discovered live — these are the valid \`harness\`, \`model\`, and",
     `\`reasoningEffort\` values right now, so you don't have to guess. Default harness: **${c.defaultHarness}**.`,
     "Omit any of them to take the default.",
   ];
@@ -569,20 +556,19 @@ function renderCapabilitiesForGuide(caps: unknown): string {
     }
     if (h.approvalModes?.length) lines.push(`    - approval modes: ${h.approvalModes.join(", ")}`);
   }
-  lines.push("", "Re-run `orc capabilities` any time, or `orc capabilities --host <ssh>` for another machine.");
+  lines.push("", "Re-run `orc capabilities` any time.");
   return lines.join("\n");
 }
 
 export const doctor = defineOp({
   name: "doctor",
-  doc: "Preflight an executor: harness binaries, versions, cwd existence.",
+  doc: "Preflight this machine: harness binaries, versions, cwd existence.",
   readOnly: true,
   input: z.object({
-    host: z.string().optional(),
     cwd: z.string().optional(),
   }),
   async handler(input, ctx) {
-    const executor = ctx.registry.executorFor(input.host);
+    const executor = ctx.registry.executor;
     const checks: Record<string, unknown> = {};
     for (const [name, harness] of ctx.registry.harnesses) {
       const caps = await harness.discover({ executor }).catch(() => null);
@@ -591,7 +577,7 @@ export const doctor = defineOp({
     if (input.cwd) {
       checks.cwd = { path: input.cwd, exists: await executor.exists(input.cwd) };
     }
-    return { host: input.host ?? "(local)", checks };
+    return { checks };
   },
 });
 

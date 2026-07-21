@@ -406,7 +406,6 @@ describe("codexHarness watchdog and cancellation", () => {
 
 describe("codexHarness discover", () => {
   class VersionStubExecutor implements Executor {
-    readonly host: string | undefined = undefined;
     private readonly inner = new LocalExecutor();
     spawn(cmd: string[], opts?: SpawnOptions) {
       return this.inner.spawn(cmd, opts);

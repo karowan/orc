@@ -629,7 +629,7 @@
           <article class="principle">
             <span class="num">P-04</span>
             <h3>Native controls first</h3>
-            <p>Claude, Codex, the operating system, and SSH enforce what they already know how to enforce. Orc does not build a second shell, sandbox, transport, or policy language.</p>
+            <p>Claude, Codex, and the operating system enforce what they already know how to enforce. Orc does not build a second shell, sandbox, or policy language.</p>
           </article>
           <article class="principle">
             <span class="num">P-05</span>
@@ -660,7 +660,6 @@
               <li>A distributed workflow service or multi-user control plane.</li>
               <li>Exactly-once external side effects.</li>
               <li>A universal side-effect sandbox for agent integrations.</li>
-              <li>Guaranteed remote process death over plain SSH.</li>
               <li>Replay compatibility across arbitrary orc upgrades.</li>
               <li>Automatic discovery of ambient plugins or extensions.</li>
             </ul>
@@ -686,7 +685,7 @@
             <div class="arch-node" role="listitem"><b>Compiler</b><span>Bundles the source into one frozen JavaScript artifact and hashes its exact bytes.</span></div>
             <div class="arch-node" role="listitem"><b>QuickJS VM</b><span>Runs deterministic control flow and emits sequenced leaf specifications.</span></div>
             <div class="arch-node" role="listitem"><b>Supervisor</b><span>Validates, journals, schedules, budgets, retries, controls, and delivers completions.</span></div>
-            <div class="arch-node" role="listitem"><b>Harness + executor</b><span>Maps one leaf onto Claude or Codex, locally or through system SSH.</span></div>
+            <div class="arch-node" role="listitem"><b>Harness + executor</b><span>Maps one leaf onto Claude or Codex on the local machine.</span></div>
           </div>
           <div class="arch-row secondary" role="list" aria-label="Run artifacts and surfaces">
             <div class="arch-node" role="listitem"><b>Durable facts</b><span>manifest · frozen bundle · journal · result bodies</span></div>
@@ -709,7 +708,7 @@
             </thead>
             <tbody>
               <tr><th scope="row"><code>@orc/core</code></th><td>Contracts, QuickJS engine, run files, replay, supervisor, status, policy, canonical JSON.</td><td>Agent-vendor wire protocols or user-facing command rendering.</td></tr>
-              <tr><th scope="row"><code>@orc/executors</code></th><td>Local process groups, SSH transport, quoting, stream lifecycle, environment checks.</td><td>Agent semantics, approvals, replay, or result validation.</td></tr>
+              <tr><th scope="row"><code>@orc/executors</code></th><td>Local process groups, stream lifecycle, environment checks.</td><td>Agent semantics, approvals, replay, or result validation.</td></tr>
               <tr><th scope="row"><code>@orc/harness-*</code></th><td>Vendor protocol mapping, capability discovery, sessions, approvals, normalized events.</td><td>Run ownership, durable state, scheduling, or cross-leaf policy.</td></tr>
               <tr><th scope="row"><code>@orc/ops</code></th><td>Zod-first operation registry, built-in assembly, detached supervisor startup.</td><td>Separate behavior for each product surface.</td></tr>
               <tr><th scope="row"><code>@orc/cli</code></th><td>Interpret operations as commands and flags.</td><td>A second command schema or orchestration implementation.</td></tr>
@@ -1010,11 +1009,10 @@ export default program;</code></pre>
           </article>
           <article class="panel">
             <span class="label">Executor contract</span>
-            <h3>One argv, local or SSH</h3>
+            <h3>One argv</h3>
             <p>
-              Executors spawn commands, collect output, and expose basic file operations.
-              Host and working directory remain separate fields; shell quoting exists only
-              at the SSH boundary.
+              Executors spawn commands, collect output, and expose basic file operations
+              on the local machine.
             </p>
           </article>
         </div>
@@ -1023,30 +1021,23 @@ export default program;</code></pre>
           <table>
             <caption class="sr-only">Built-in adapter execution paths and behavior</caption>
             <thead>
-              <tr><th>Adapter</th><th>Local path</th><th>Remote path</th><th>Important behavior</th></tr>
+              <tr><th>Adapter</th><th>Execution path</th><th>Important behavior</th></tr>
             </thead>
             <tbody>
               <tr>
                 <th scope="row"><strong>Claude</strong></th>
                 <td>Anthropic Agent SDK controlling the system Claude CLI.</td>
-                <td>Claude CLI stream-JSON through the executor.</td>
-                <td>Native structured output and sessions. Remote v1 supports only <code>auto</code>/<code>bypass</code> because no approval back-channel exists; requested reasoning effort is not yet forwarded to the remote CLI.</td>
+                <td>Native structured output, sessions, and canUseTool approval bridging.</td>
               </tr>
               <tr>
                 <th scope="row"><strong>Codex</strong></th>
-                <td colspan="2"><code>codex app-server</code> JSON-RPC spawned through the selected executor.</td>
-                <td>The same wire protocol works locally and over SSH; model discovery uses native <code>model/list</code>; strict output schemas are normalized and restored.</td>
+                <td><code>codex app-server</code> JSON-RPC spawned through the executor.</td>
+                <td>Model discovery uses native <code>model/list</code>; strict output schemas are normalized and restored.</td>
               </tr>
               <tr>
                 <th scope="row"><strong>Local executor</strong></th>
                 <td>Detached process group with TERM then KILL escalation.</td>
-                <td>—</td>
                 <td>Group signaling includes descendants; stdout/stderr drain is bounded after leader exit.</td>
-              </tr>
-              <tr>
-                <th scope="row"><strong>SSH executor</strong></th>
-                <td colspan="2">System <code>ssh</code>, BatchMode, no TTY, option terminator, remote <code>zsh -lc</code>.</td>
-                <td>Reuses SSH config, agents, ProxyJump, and login PATH. Channel teardown does not prove the remote process died.</td>
               </tr>
             </tbody>
           </table>
@@ -1116,8 +1107,8 @@ export default program;</code></pre>
               <tr><th>Approval mode</th><th>Product meaning</th><th>Claude</th><th>Codex</th></tr>
             </thead>
             <tbody>
-              <tr><th scope="row"><code>manual</code></th><td>Ask the operator for tool authority.</td><td>SDK callback locally; unsupported over SSH v1.</td><td>App-server approval requests bridge to controls.</td></tr>
-              <tr><th scope="row"><code>accept-edits</code></th><td>Permit native in-scope file edits; ask for other authority.</td><td>Native accept-edits locally; unsupported over SSH v1.</td><td>Auto-accept confined file changes; bridge commands and out-of-scope edits.</td></tr>
+              <tr><th scope="row"><code>manual</code></th><td>Ask the operator for tool authority.</td><td>SDK <code>canUseTool</code> callback.</td><td>App-server approval requests bridge to controls.</td></tr>
+              <tr><th scope="row"><code>accept-edits</code></th><td>Permit native in-scope file edits; ask for other authority.</td><td>Native accept-edits.</td><td>Auto-accept confined file changes; bridge commands and out-of-scope edits.</td></tr>
               <tr><th scope="row"><code>auto</code></th><td>No interactive prompt; denied native requests are reported.</td><td><code>dontAsk</code>.</td><td><code>approvalPolicy: never</code>.</td></tr>
               <tr><th scope="row"><code>bypass</code></th><td>Explicit autonomous authority for a write-capable leaf.</td><td>Dangerous skip only when neither read-only nor sandboxed.</td><td>Danger-full-access only when neither read-only nor sandboxed.</td></tr>
             </tbody>
@@ -1318,16 +1309,6 @@ export default program;</code></pre>
             </div>
           </article>
 
-          <article class="decision">
-            <div class="decision-id">D-08</div>
-            <div class="decision-body">
-              <h3>Use the system SSH client</h3>
-              <div class="decision-grid">
-                <div><b>Why</b>SSH config, agents, ProxyJump, host aliases, and authentication work without another transport stack.</div>
-                <div><b>Cost</b>Closing the channel cannot prove a remote descendant stopped.</div>
-                <div><b>Revisit when</b>Confirmed remote cancellation is a real requirement; add a wrapper or remote agent then.</div>
-              </div>
-            </div>
           </article>
 
           <article class="decision">
@@ -1400,12 +1381,6 @@ export default program;</code></pre>
           </div>
           <div class="limit-row" role="listitem">
             <span class="status accepted">Accepted</span>
-            <div><b>Remote cancellation is best-effort</b>Plain SSH confirms local channel teardown, not death of every remote process.</div>
-            <div><b>User effect</b>After stop, users must assume remote state may be unknown; an immediate resume could overlap surviving external work.</div>
-            <div><b>Revisit trigger</b>Users depend on confirmed remote stop enough to justify a wrapper or remote agent.</div>
-          </div>
-          <div class="limit-row" role="listitem">
-            <span class="status accepted">Accepted</span>
             <div><b>Budget overshoot</b>Spend is enforced after cumulative usage updates, without pre-reserving concurrent leaves.</div>
             <div><b>User effect</b>A configured cap limits continued work but is not an exact billing ceiling.</div>
             <div><b>Revisit trigger</b>Exact financial enforcement or provider-side reservation becomes available and necessary.</div>
@@ -1445,12 +1420,6 @@ export default program;</code></pre>
             <div><b>Launch predicts the monitor URL</b>Launch returns the deterministic base port before a monitor has necessarily bound; the server may later fall back to one of the next 20 ports.</div>
             <div><b>User effect</b>The launch link can be wrong when the base port is occupied; <code>orc open</code> discovers the actual URL.</div>
             <div><b>Revisit trigger</b>Return only the static report at launch, or start/query the monitor before promising a URL.</div>
-          </div>
-          <div class="limit-row" role="listitem">
-            <span class="status unsupported">Unsupported</span>
-            <div><b>Remote Claude reasoning effort</b>The remote harness records the requested effort but does not pass an effort flag to the Claude CLI.</div>
-            <div><b>User effect</b>The monitor can display the request while the remote model uses its native default.</div>
-            <div><b>Revisit trigger</b>The remote CLI exposes a stable effort flag and a focused adapter test can prove it.</div>
           </div>
           <div class="limit-row" role="listitem">
             <span class="status accepted">Accepted</span>
@@ -1506,12 +1475,6 @@ export default program;</code></pre>
             <div><b>User effect</b>Large inline answers fail clearly and must be summarized or written as separate artifacts.</div>
             <div><b>Revisit trigger</b>Real workflows repeatedly need large structured results.</div>
           </div>
-          <div class="limit-row" role="listitem">
-            <span class="status unsupported">Unsupported</span>
-            <div><b>Remote Claude interactive approvals</b>Manual and accept-edits lack an SSH approval back-channel in v1.</div>
-            <div><b>User effect</b>Those combinations fail closed; remote Claude uses auto or bypass.</div>
-            <div><b>Revisit trigger</b>The native protocol gains a simple supported back-channel or user demand justifies one.</div>
-          </div>
         </div>
       </section>
 
@@ -1538,7 +1501,7 @@ export default program;</code></pre>
               <tr><th scope="row">Retries, budget accounting, schema validation, shutdown, and extension contracts.</th><td><a href="packages/core/test/fixes.test.ts"><code>packages/core/test/fixes.test.ts</code></a></td></tr>
               <tr><th scope="row">Run identity, JSONL crash recovery, native ownership, and contention.</th><td><a href="packages/core/test/rundir.test.ts"><code>packages/core/test/rundir.test.ts</code></a></td></tr>
               <tr><th scope="row">Real SIGKILL recovery without redispatching durably completed leaves.</th><td><a href="packages/core/test/kill9.test.ts"><code>packages/core/test/kill9.test.ts</code></a></td></tr>
-              <tr><th scope="row">Local process groups, escalation, stream drainage, SSH quoting and destination safety.</th><td><a href="packages/executors/test/local.test.ts"><code>packages/executors/test/local.test.ts</code></a> · <a href="packages/executors/test/ssh-unit.test.ts"><code>ssh-unit.test.ts</code></a></td></tr>
+              <tr><th scope="row">Local process groups, escalation, and stream drainage.</th><td><a href="packages/executors/test/local.test.ts"><code>packages/executors/test/local.test.ts</code></a></td></tr>
               <tr><th scope="row">Claude and Codex permission mapping, sessions, structured output, cancellation, and capability discovery.</th><td><a href="packages/harness-claude/test/harness.test.ts"><code>Claude harness tests</code></a> · <a href="packages/harness-codex/test/harness.test.ts"><code>Codex harness tests</code></a></td></tr>
               <tr><th scope="row">Registry interpretation, detached readiness, SDK facade behavior, monitor identity, report projection, and live controls.</th><td><a href="packages/ops/test"><code>packages/ops/test</code></a> · <a href="packages/sdk/test"><code>packages/sdk/test</code></a> · <a href="packages/ui/test"><code>packages/ui/test</code></a></td></tr>
             </tbody>
@@ -1558,7 +1521,6 @@ git diff --check</code></pre>
             <h3>Live checks are opt-in</h3>
             <pre tabindex="0"><code>ORC_CODEX_LIVE=1 \
 ORC_CLAUDE_LIVE=1 \
-ORC_SSH_TEST_HOST=frank \
 npx vitest run</code></pre>
           </article>
         </div>
@@ -1599,7 +1561,7 @@ npx vitest run</code></pre>
               <tr><th scope="row"><strong>Fail-forward</strong></th><td>Resume that preserves history and retries only an unambiguous unfinished/terminal frontier.</td></tr>
               <tr><th scope="row"><strong>Re-orient</strong></th><td>A write attempt that first inspects current external state rather than blindly repeating prior work.</td></tr>
               <tr><th scope="row"><strong>Harness</strong></th><td>Agent-vendor adapter that turns a LeafRequest into normalized HarnessEvents.</td></tr>
-              <tr><th scope="row"><strong>Executor</strong></th><td>Process and filesystem adapter for the local host or an SSH destination.</td></tr>
+              <tr><th scope="row"><strong>Executor</strong></th><td>Process and filesystem adapter for the local host.</td></tr>
               <tr><th scope="row"><strong>Trace</strong></th><td>Observational attempt detail; useful for humans, not deterministic authority.</td></tr>
               <tr><th scope="row"><strong>Control epoch</strong></th><td>The portion of the append-only control stream consumed by one supervisor ownership period.</td></tr>
             </tbody>
@@ -1614,9 +1576,9 @@ npx vitest run</code></pre>
           <li><a href="packages/core/src/rundir.ts">packages/core/src/rundir.ts</a><span>Run artifacts, JSONL recovery, result storage, and advisory ownership.</span></li>
           <li><a href="packages/core/src/status.ts">packages/core/src/status.ts</a><span>Pure journal-plus-trace status projection.</span></li>
           <li><a href="packages/core/src/canonical.ts">packages/core/src/canonical.ts</a><span>Strict canonical JSON and digests.</span></li>
-          <li><a href="packages/harness-claude/src/index.ts">packages/harness-claude/src/index.ts</a><span>Claude transports, permissions, and event mapping.</span></li>
+          <li><a href="packages/harness-claude/src/index.ts">packages/harness-claude/src/index.ts</a><span>Claude transport, permissions, and event mapping.</span></li>
           <li><a href="packages/harness-codex/src/harness.ts">packages/harness-codex/src/harness.ts</a><span>Codex app-server protocol, approvals, sandbox, and sessions.</span></li>
-          <li><a href="packages/executors/src">packages/executors/src</a><span>Local and SSH execution boundaries.</span></li>
+          <li><a href="packages/executors/src">packages/executors/src</a><span>Local execution boundary.</span></li>
           <li><a href="packages/ops/src/ops.ts">packages/ops/src/ops.ts</a><span>Canonical operation definitions and detached startup.</span></li>
           <li><a href="packages/ops/src/registry.ts">packages/ops/src/registry.ts</a><span>Built-in and explicit extension assembly.</span></li>
           <li><a href="packages/cli/src/bin.ts">packages/cli/src/bin.ts</a><span>Exhaustive command-line interpretation of the operation registry.</span></li>
