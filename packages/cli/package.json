@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "0BSD",
   "type": "module",
   "main": "dist/bin.js",
@@ -8,7 +8,7 @@
     "orc": "dist/bin.js"
   },
   "dependencies": {
-    "@karowanorg/orc-ops": "^0.1.0",
+    "@karowanorg/orc-ops": "^0.1.1",
     "commander": "^13.0.0",
     "zod": "^4.1.0"
   },

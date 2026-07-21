@@ -1,12 +1,12 @@
 {
   "name": "@karowanorg/orc-harness-claude",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@karowanorg/orc-core": "^0.1.0",
-    "@karowanorg/orc-executors": "^0.1.0",
+    "@karowanorg/orc-core": "^0.1.1",
+    "@karowanorg/orc-executors": "^0.1.1",
     "@anthropic-ai/claude-agent-sdk": "^0.3.0",
     "zod": "^4.1.0"
   },

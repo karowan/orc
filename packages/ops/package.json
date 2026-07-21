@@ -1,15 +1,15 @@
 {
   "name": "@karowanorg/orc-ops",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@karowanorg/orc-core": "^0.1.0",
-    "@karowanorg/orc-executors": "^0.1.0",
-    "@karowanorg/orc-harness-claude": "^0.1.0",
-    "@karowanorg/orc-harness-codex": "^0.1.0",
-    "@karowanorg/orc-ui": "^0.1.0",
+    "@karowanorg/orc-core": "^0.1.1",
+    "@karowanorg/orc-executors": "^0.1.1",
+    "@karowanorg/orc-harness-claude": "^0.1.1",
+    "@karowanorg/orc-harness-codex": "^0.1.1",
+    "@karowanorg/orc-ui": "^0.1.1",
     "zod": "^4.1.0"
   },
   "description": "The zod-first operation registry orc's CLI, MCP server, and SDK all interpret.",

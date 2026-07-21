@@ -1,11 +1,11 @@
 {
   "name": "@karowanorg/orc-executors",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@karowanorg/orc-core": "^0.1.0"
+    "@karowanorg/orc-core": "^0.1.1"
   },
   "description": "Process executor for orc: local process groups with clean lifecycle.",
   "types": "dist/index.d.ts",

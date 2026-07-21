@@ -2,7 +2,7 @@
 
 All nine packages publish publicly under the `@karowanorg/orc-*` scope from this
 workspace. Entry points are built (`dist/`); `files` whitelists keep tarballs
-lean; interdeps are pinned `^0.1.0`.
+lean; interdeps are pinned `^0.1.1`.
 
 ## One-time setup
 
@@ -17,12 +17,12 @@ npm run release       # tsc -b && npm publish --workspaces (access is public via
 ```
 
 Then publish orc-review (see its PUBLISHING.md) — it depends on these
-packages at `^0.1.0`.
+packages at `^0.1.1`.
 
 ## Versioning
 
 Manual for now: bump the version in each changed package plus anything
-depending on it (interdeps are `^0.1.0`, so patch/minor bumps flow without
+depending on it (interdeps are `^0.1.1`, so patch/minor bumps flow without
 edits), rebuild, `npm run release`.
 
 ## Invariants to keep

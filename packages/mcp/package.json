@@ -1,11 +1,11 @@
 {
   "name": "@karowanorg/orc-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@karowanorg/orc-ops": "^0.1.0",
+    "@karowanorg/orc-ops": "^0.1.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.1.0"
   },

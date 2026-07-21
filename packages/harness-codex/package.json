@@ -1,12 +1,12 @@
 {
   "name": "@karowanorg/orc-harness-codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@karowanorg/orc-core": "^0.1.0",
-    "@karowanorg/orc-executors": "^0.1.0"
+    "@karowanorg/orc-core": "^0.1.1",
+    "@karowanorg/orc-executors": "^0.1.1"
   },
   "description": "Codex harness for orc: codex app-server JSON-RPC through the executor.",
   "types": "dist/index.d.ts",
