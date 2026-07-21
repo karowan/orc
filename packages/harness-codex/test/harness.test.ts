@@ -140,6 +140,10 @@ describe("codexHarness happy path", () => {
 
     // Wire mapping assertions.
     const threadStart = methodParams(record, "thread/start");
+    expect(methodParams(record, "initialize").capabilities).toEqual({
+      experimentalApi: true,
+      requestAttestation: false,
+    });
     expect(threadStart.approvalPolicy).toBe("never"); // auto -> never
     expect(threadStart.sandbox).toBe("read-only"); // readOnly -> read-only
     expect(threadStart.cwd).toBe(cwd);

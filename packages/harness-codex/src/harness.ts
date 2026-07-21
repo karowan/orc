@@ -155,6 +155,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
   const appServerCommand = options.appServerCommand ?? ["codex", "app-server"];
   const interruptGraceMs = options.interruptGraceMs ?? 2000;
   const clientInfo = options.clientInfo ?? { name: "orc", version: "0.1.0" };
+  const initializeCapabilities = { experimentalApi: true, requestAttestation: false };
   const costRates = loadCostRates(options.costRates);
 
   async function discover(ctx: { executor: Executor }): Promise<HarnessCapabilities> {
@@ -220,7 +221,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           if (timer) clearTimeout(timer);
         }
       };
-      await withTimeout(rpc.request("initialize", { clientInfo }), 20_000);
+      await withTimeout(rpc.request("initialize", { clientInfo, capabilities: initializeCapabilities }), 20_000);
       rpc.notify("initialized", {});
       const res = await withTimeout(rpc.request<ModelListResult>("model/list", {}), 20_000);
       const visible = (res.data ?? []).filter((m) => !m.hidden && typeof m.id === "string");
@@ -586,7 +587,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     else ctx.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      await rpc.request("initialize", { clientInfo });
+      await rpc.request("initialize", { clientInfo, capabilities: initializeCapabilities });
       rpc.notify("initialized", {});
 
       const developerInstructions = req.system.trim() || undefined;
