@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { HarnessContext, HarnessEvent } from "@orc/core/src/contracts.js";
+import type { HarnessContext, HarnessEvent } from "@orc/core";
 import { LocalExecutor } from "@orc/executors";
 import { codexHarness } from "../src/harness.js";
 

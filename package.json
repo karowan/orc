@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run",
+    "test": "tsc -b && vitest run",
     "typecheck": "tsc -b --noEmit || tsc -b",
-    "build:cli": "node --import tsx scripts/build-cli.mjs"
+    "build:cli": "node --import tsx scripts/build-cli.mjs",
+    "release": "tsc -b && npm publish --workspaces"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

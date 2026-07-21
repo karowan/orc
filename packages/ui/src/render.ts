@@ -25,8 +25,8 @@ import type {
   RunStatus,
   ToolCallTrace,
   TraceRecord,
-} from "@orc/core/src/contracts.js";
-import { latestLeafTraces, openApprovals } from "@orc/core/src/status.js";
+} from "@orc/core";
+import { latestLeafTraces, openApprovals } from "@orc/core";
 
 // ---------------------------------------------------------------------------
 // Escaping + formatting

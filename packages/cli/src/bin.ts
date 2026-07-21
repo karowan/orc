@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * The orc CLI — every command is a runtime interpretation of the zod-first
  * operation registry (@orc/ops). No hand-maintained flag lists: flags, help

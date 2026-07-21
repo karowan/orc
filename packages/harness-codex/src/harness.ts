@@ -43,8 +43,8 @@ import type {
   LeafRequest,
   ModelCapability,
   Proc,
-} from "@orc/core/src/contracts.js";
-import { estimateCostUsd, loadCostRates, type ModelRate } from "@orc/core/src/cost.js";
+} from "@orc/core";
+import { estimateCostUsd, loadCostRates, type ModelRate } from "@orc/core";
 import { JsonRpcClient } from "./rpc.js";
 import {
   extractFirstJsonObject,

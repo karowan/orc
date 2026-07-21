@@ -3,10 +3,27 @@
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "dependencies": {
-    "@orc/ops": "*",
+    "@orc/ops": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.1.0"
+  },
+  "description": "orc as a stdio MCP server: every operation exposed as a tool.",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

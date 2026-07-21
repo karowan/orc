@@ -1,5 +1,5 @@
-import type { Json } from "@orc/core/src/contracts.js";
-import { validateAgainstSchema } from "@orc/core/src/jsonschema.js";
+import type { Json } from "@orc/core";
+import { validateAgainstSchema } from "@orc/core";
 
 /**
  * Normalize a JSON Schema for codex `outputSchema`.

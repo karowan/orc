@@ -1,4 +1,4 @@
-import type { Proc } from "@orc/core/src/contracts.js";
+import type { Proc } from "@orc/core";
 
 export type RpcId = number | string;
 

@@ -3,11 +3,28 @@
   "version": "0.1.0",
   "license": "0BSD",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "dependencies": {
     "ajv": "^8.20.0",
     "quickjs-emscripten": "^0.31.0",
     "esbuild": "^0.25.0",
     "zod": "^4.1.0"
+  },
+  "description": "The orc engine: deterministic QuickJS event loop, journaled leaves, replay/resume, supervisor, contracts.",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

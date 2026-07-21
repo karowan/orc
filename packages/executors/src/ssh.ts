@@ -1,5 +1,5 @@
 import { pipeline } from "node:stream/promises";
-import type { Executor, Proc, SpawnOptions } from "@orc/core/src/contracts.js";
+import type { Executor, Proc, SpawnOptions } from "@orc/core";
 import { LocalExecutor } from "./local.js";
 import { collectRun } from "./run.js";
 import { shJoin, shQuote } from "./shquote.js";

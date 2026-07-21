@@ -1,4 +1,4 @@
-import type { Executor } from "@orc/core/src/contracts.js";
+import type { Executor } from "@orc/core";
 
 export interface HarnessBinaryReport {
   name: string;

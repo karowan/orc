@@ -11,7 +11,7 @@ import type {
   HarnessEvent,
   LeafRequest,
   SpawnOptions,
-} from "@orc/core/src/contracts.js";
+} from "@orc/core";
 import { LocalExecutor } from "@orc/executors";
 import { createCodexHarness } from "../src/harness.js";
 
