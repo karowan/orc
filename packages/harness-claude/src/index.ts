@@ -232,6 +232,7 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
   // from the first frame; refine `model` to the SDK's resolved id when it arrives.
   yield { kind: "model", model: req.model, reasoningEffort: req.reasoningEffort };
   let reportedModel = req.model;
+  let syntheticFailure: string | undefined;
   try {
     for await (const message of query({ prompt: req.prompt, options })) {
       const m =
@@ -241,6 +242,15 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
         reportedModel = m;
         yield { kind: "model", model: m, reasoningEffort: req.reasoningEffort };
       }
+      if (m === "<synthetic>") {
+        syntheticFailure = assistantText(message) || "Claude Code returned a synthetic local failure";
+        yield { kind: "error", message: `claude unavailable: ${syntheticFailure}` };
+        continue;
+      }
+      // Claude Code emits a nominal success result after local auth/quota
+      // failures. Do not turn that status prose into `{text: ...}` and then
+      // misreport it as an output-schema defect.
+      if (syntheticFailure && message.type === "result") continue;
       for (const ev of mapSdkMessage(message)) yield ev;
     }
   } catch (err) {
@@ -252,6 +262,17 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
   } finally {
     ctx.signal.removeEventListener("abort", onAbort);
   }
+}
+
+function assistantText(message: SDKMessage): string {
+  if (message.type !== "assistant") return "";
+  return (message.message.content ?? [])
+    .flatMap((block) => {
+      const candidate = block as { type?: string; text?: unknown };
+      return candidate.type === "text" && typeof candidate.text === "string" ? [candidate.text] : [];
+    })
+    .join("\n")
+    .trim();
 }
 
 function* mapSdkMessage(message: SDKMessage): Iterable<HarnessEvent> {

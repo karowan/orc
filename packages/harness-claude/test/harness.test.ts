@@ -56,6 +56,29 @@ const unusedExecutor = {
 } satisfies Executor;
 
 describe("claude local policy", () => {
+  it("preserves synthetic auth and quota failures instead of validating them as model JSON", async () => {
+    sdk.query.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "assistant",
+          message: {
+            model: "<synthetic>",
+            content: [{ type: "text", text: "You've hit your session limit · resets 12pm" }],
+          },
+        };
+        yield { type: "result", subtype: "success", result: "You've hit your session limit · resets 12pm" };
+      },
+    });
+
+    const events = await collect(req({ schema: { type: "object", required: ["findings"] } }), context(unusedExecutor));
+
+    expect(events).toContainEqual({
+      kind: "error",
+      message: "claude unavailable: You've hit your session limit · resets 12pm",
+    });
+    expect(events.some((event) => event.kind === "result")).toBe(false);
+  });
+
   it("keeps read-only authoritative over bypass while preserving configured MCPs", async () => {
     sdk.query.mockReturnValueOnce({
       async *[Symbol.asyncIterator]() {},
