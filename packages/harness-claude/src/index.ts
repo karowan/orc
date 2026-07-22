@@ -220,6 +220,9 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
             enabled: true,
             failIfUnavailable: true,
             allowUnsandboxedCommands: false,
+            ...(req.networkAccess
+              ? { network: { allowedDomains: ["*"], allowLocalBinding: true } }
+              : {}),
             filesystem: { allowWrite: roots },
           },
         }

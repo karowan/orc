@@ -1,12 +1,12 @@
 {
   "name": "@karowanorg/orc-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
   "dependencies": {
-    "@karowanorg/orc-ops": "^0.1.1",
-    "@karowanorg/orc-core": "^0.1.1",
+    "@karowanorg/orc-ops": "^0.1.2",
+    "@karowanorg/orc-core": "^0.1.2",
     "zod": "^4.1.0"
   },
   "exports": {

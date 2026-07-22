@@ -62,6 +62,7 @@ function writeRun(
     approvalMode: "auto",
     sandbox: false,
     sandboxDirs: [],
+    networkAccess: false,
     maxParallel: 1,
     idleTimeoutMs: false,
     defaultHarness: "none",

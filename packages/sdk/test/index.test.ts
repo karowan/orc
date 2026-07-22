@@ -33,6 +33,7 @@ function writeRunningRun(runId: string): void {
     approvalMode: "auto",
     sandbox: false,
     sandboxDirs: [],
+    networkAccess: false,
     maxParallel: 1,
     idleTimeoutMs: false,
     defaultHarness: "codex",

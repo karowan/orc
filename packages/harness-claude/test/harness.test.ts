@@ -152,6 +152,25 @@ describe("claude local policy", () => {
     ).resolves.toMatchObject({ behavior: "deny" });
   });
 
+  it("allows outbound network without weakening filesystem confinement", async () => {
+    sdk.query.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {},
+    });
+
+    await collect(
+      req({ readOnly: false, sandbox: true, networkAccess: true }),
+      context(unusedExecutor),
+    );
+
+    const options = (sdk.query.mock.calls.at(-1)![0] as { options: Options }).options;
+    expect(options.sandbox).toMatchObject({
+      enabled: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { allowWrite: ["/workspace"] },
+      network: { allowedDomains: ["*"], allowLocalBinding: true },
+    });
+  });
+
   it("keeps bypass autonomous but confined when sandboxing is requested", async () => {
     sdk.query.mockReturnValueOnce({
       async *[Symbol.asyncIterator]() {},

@@ -68,6 +68,7 @@ export interface LaunchOptions {
   approvalMode?: RunManifest["approvalMode"];
   sandbox?: boolean;
   sandboxDirs?: string[];
+  networkAccess?: boolean;
   maxParallel?: number;
   idleTimeout?: number | false; // ms
   budgetUsd?: number; // reactive USD cap; the run fails once observed cost exceeds it
@@ -107,6 +108,7 @@ export async function prepareRun(opts: LaunchOptions, registry: Registry): Promi
     approvalMode: opts.approvalMode ?? "auto",
     sandbox: opts.sandbox ?? false,
     sandboxDirs: opts.sandboxDirs ?? [],
+    networkAccess: opts.networkAccess ?? false,
     maxParallel: Math.min(opts.maxParallel ?? DEFAULT_POLICY.maxParallel, 64),
     idleTimeoutMs: opts.idleTimeout ?? 15 * 60_000,
     budgetUsd: opts.budgetUsd,
@@ -826,6 +828,7 @@ class Supervisor {
         idleTimeoutMs: leaf.idleTimeoutMs,
         sandbox: this.manifest.sandbox,
         sandboxDirs: this.manifest.sandboxDirs,
+        networkAccess: this.manifest.networkAccess,
       };
 
       let result: Json | undefined;

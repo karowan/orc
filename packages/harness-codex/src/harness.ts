@@ -599,6 +599,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
           ...(sandbox !== undefined ? { sandbox } : {}), // omit -> inherit user's config default
+          ...(req.sandbox && req.networkAccess
+            ? { config: { sandbox_workspace_write: { network_access: true } } }
+            : {}),
           ...(developerInstructions ? { developerInstructions } : {}),
         });
         threadId = resumed.thread?.id ?? req.sessionId;
@@ -608,6 +611,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
           ...(sandbox !== undefined ? { sandbox } : {}), // omit -> inherit user's config default
+          ...(req.sandbox && req.networkAccess
+            ? { config: { sandbox_workspace_write: { network_access: true } } }
+            : {}),
           ...(developerInstructions ? { developerInstructions } : {}),
         });
         threadId = started.thread?.id;

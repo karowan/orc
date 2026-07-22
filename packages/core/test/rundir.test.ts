@@ -43,6 +43,7 @@ function manifest(runId: string, name = "first"): RunManifest {
     approvalMode: "auto",
     sandbox: false,
     sandboxDirs: [],
+    networkAccess: false,
     maxParallel: 1,
     idleTimeoutMs: false,
     defaultHarness: "fake",

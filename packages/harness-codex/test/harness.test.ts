@@ -183,6 +183,16 @@ describe("codexHarness happy path", () => {
     const sbStart = methodParams(sb.record, "thread/start");
     expect(sbStart.sandbox).toBe("workspace-write");
     expect(sbStart.runtimeWorkspaceRoots).toEqual([sb.cwd, "/opt/orc-cache"]);
+    expect(sbStart.config).toBeUndefined();
+    const online = await runScenario("happy", {
+      approvalMode: "auto",
+      readOnly: false,
+      sandbox: true,
+      networkAccess: true,
+    });
+    expect(methodParams(online.record, "thread/start").config).toEqual({
+      sandbox_workspace_write: { network_access: true },
+    });
     // explicit bypass -> danger-full-access (opt-in max)
     expect(methodParams(bypass.record, "thread/start").sandbox).toBe("danger-full-access");
   });

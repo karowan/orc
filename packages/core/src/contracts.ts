@@ -109,6 +109,8 @@ export interface LeafRequest {
    */
   sandbox?: boolean;
   sandboxDirs?: string[];
+  /** Permit outbound network while retaining the requested filesystem sandbox. */
+  networkAccess?: boolean;
 }
 
 export type HarnessEvent =
@@ -332,6 +334,7 @@ export interface RunManifest {
   approvalMode: ApprovalMode;
   sandbox: boolean; // confine write leaves to cwd + sandboxDirs (default false)
   sandboxDirs: string[]; // extra writable roots when sandboxed (cache dirs, etc.)
+  networkAccess: boolean; // outbound network inside the sandbox (default false)
   maxParallel: number;
   idleTimeoutMs: number | false;
   /** Reactive USD cap: the run fails once observed estimated cost exceeds this. */
