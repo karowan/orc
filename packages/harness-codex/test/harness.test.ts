@@ -457,6 +457,35 @@ describe("codexHarness discover", () => {
     expect(caps.detail).toBe("codex app-server model/list");
   });
 
+  it("falls back to the model under CODEX_HOME", async () => {
+    class ConfigHomeExecutor extends VersionStubExecutor {
+      configPath: string | undefined;
+      homeCommand: string[] | undefined;
+
+      override spawn(): never {
+        throw new Error("model/list unavailable");
+      }
+      override async run(cmd: string[], opts?: SpawnOptions & { timeoutMs?: number }) {
+        if (cmd[0] === "sh") {
+          this.homeCommand = cmd;
+          return { code: 0, stdout: "/managed/codex", stderr: "" };
+        }
+        return super.run(cmd, opts);
+      }
+      override async readFile(path: string) {
+        this.configPath = path;
+        return 'model = "managed-model"\n';
+      }
+    }
+
+    const executor = new ConfigHomeExecutor();
+    const caps = await createCodexHarness().discover({ executor });
+
+    expect(executor.homeCommand?.[2]).toContain("CODEX_HOME");
+    expect(executor.configPath).toBe("/managed/codex/config.toml");
+    expect(caps.models.map((model) => model.id)).toEqual(["managed-model"]);
+  });
+
   it("reports unavailable when the codex binary is missing", async () => {
     class NoCodexExecutor extends VersionStubExecutor {
       override async run(cmd: string[], opts?: SpawnOptions & { timeoutMs?: number }) {
