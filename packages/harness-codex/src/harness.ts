@@ -199,8 +199,8 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           ]
         : [],
       detail: fallback
-        ? "fallback: model default from ~/.codex/config.toml (app-server model/list unavailable)"
-        : "fallback: app-server model/list unavailable and no ~/.codex/config.toml model",
+        ? "fallback: model default from $CODEX_HOME/config.toml (app-server model/list unavailable)"
+        : "fallback: app-server model/list unavailable and no $CODEX_HOME/config.toml model",
     };
   }
 
@@ -248,9 +248,15 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
 
   async function configTomlModel(executor: Executor): Promise<string | undefined> {
     try {
-      const home = (await executor.run(["sh", "-c", 'printf %s "$HOME"'])).stdout.trim();
-      if (!home) return undefined;
-      const toml = await executor.readFile(`${home}/.codex/config.toml`);
+      const codexHome = (
+        await executor.run([
+          "sh",
+          "-c",
+          'if [ -n "$CODEX_HOME" ]; then printf %s "$CODEX_HOME"; elif [ -n "$HOME" ]; then printf %s "$HOME/.codex"; fi',
+        ])
+      ).stdout.trim();
+      if (!codexHome) return undefined;
+      const toml = await executor.readFile(path.join(codexHome, "config.toml"));
       const m = /^\s*model\s*=\s*"([^"]+)"/m.exec(toml);
       return m?.[1];
     } catch {
@@ -276,7 +282,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     // - write leaf + sandbox   -> "workspace-write"(explicit confinement, less power)
     // - write leaf + bypass    -> "danger-full-access" (explicit max, opt-in)
     // - write leaf (default)   -> OMIT the param → codex uses the user's own
-    //   ~/.codex/config.toml default, so a leaf has exactly the caller's power.
+    //   $CODEX_HOME/config.toml default, so a leaf has exactly the caller's power.
     const sandbox: string | undefined = req.readOnly
       ? "read-only"
       : req.sandbox

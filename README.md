@@ -98,7 +98,8 @@ Every command supports `--json`.
 them natively (claude `permissionMode` incl. `dontAsk` for `auto`; codex
 `approvalPolicy`/sandbox). Pending approvals bubble into the monitor, CLI
 (`orc approvals` / `orc respond`), MCP, and `run.watch()`. Default substrate is the
-user's own settings (claude `settingSources`, codex `~/.codex/config.toml`).
+user's own settings (claude `settingSources`, codex `$CODEX_HOME/config.toml`,
+normally `~/.codex/config.toml`).
 `readOnly` blocks built-in command and file-mutation tools but deliberately does
 not disable configured hooks and MCPs such as Computer Use; their side effects
 are outside that guarantee.
