@@ -25,6 +25,7 @@ import type {
   RunStatus,
   ToolCallTrace,
   TraceRecord,
+  UiPresentation,
 } from "@karowanorg/orc-core";
 import { latestLeafTraces, openApprovals } from "@karowanorg/orc-core";
 
@@ -145,7 +146,7 @@ button{font-family:inherit}
 .fts{font-size:9.5px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
 .add{color:var(--green)}
 .del{color:var(--red)}
-.appr-actions{display:flex;gap:8px;align-items:center}
+.appr-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .resolving{font-size:10.5px;color:var(--muted);flex:none}
 
 .glance{padding:12px 14px 10px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:10px;flex:none}
@@ -166,6 +167,11 @@ button{font-family:inherit}
 .g-meta{display:none;gap:16px;font-size:10px;color:var(--muted)}
 .g-meta b{color:var(--text);font-weight:400}
 .g-meta .okw{color:var(--green)}
+.g-badges{display:flex;gap:6px;align-items:center;min-width:0}
+.g-badge{font-size:9.5px;color:var(--secondary);border:1px solid var(--pill);border-radius:3px;padding:2px 7px;white-space:nowrap}
+.g-badge.success{color:var(--green);border-color:var(--green-b)}
+.g-badge.warning{color:var(--amber);border-color:var(--amber-b)}
+.g-badge.danger{color:var(--red);border-color:var(--red-b)}
 
 .mbody{flex:1;display:flex;align-items:stretch;min-height:0}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
@@ -230,6 +236,25 @@ button{font-family:inherit}
 .wants{font-size:10.5px;color:var(--secondary)}
 .wants b{color:var(--bright);font-weight:700}
 .actions{display:flex;gap:8px}
+.act{flex:1;text-align:center;font-size:11px;font-weight:700;letter-spacing:.04em;min-height:38px;border-radius:4px;cursor:pointer;border:1px solid var(--pill);color:var(--text);background:none}
+.act.primary{color:var(--bg);background:var(--green);border-color:var(--green)}
+.act.danger{color:var(--red);border-color:var(--red-b)}
+.act.secondary:hover{background:var(--rowhover)}
+.act.primary:hover,.act.danger:hover{filter:brightness(1.1)}
+.appr-message{display:flex;flex-direction:column;gap:6px;width:100%;margin-top:4px}
+.appr-message[hidden]{display:none}
+.appr-message label{font-size:9.5px;color:var(--muted)}
+.appr-message textarea{width:100%;min-height:72px;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:7px;font:inherit}
+.present{display:flex;flex-direction:column;gap:7px;border:1px solid var(--border);border-left:2px solid var(--blue);padding:9px 10px}
+.present-title{font-size:11px;font-weight:700;color:var(--bright)}
+.present-summary{font-size:10.5px;color:var(--secondary);white-space:pre-wrap}
+.present-fields{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:10.5px}
+.present-fields .pk{color:var(--faint)}
+.present-fields .pv{color:var(--secondary);word-break:break-word}
+.present-fields code{color:var(--text)}
+.present-doc summary{cursor:pointer;color:var(--blue);font-size:10.5px}
+.present-doc .doc-meta{font-size:9.5px;color:var(--muted);margin:5px 0}
+.present-doc .box{max-height:360px;overflow:auto}
 .dw-allow{flex:1;text-align:center;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--bg);background:var(--green);min-height:42px;border-radius:4px;cursor:pointer;border:none}
 .dw-allow:hover{filter:brightness(1.1)}
 .dw-deny{flex:1;text-align:center;font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--red);border:1px solid var(--red-b);min-height:42px;border-radius:4px;cursor:pointer;background:none}
@@ -407,6 +432,22 @@ function rollupCost(traces: TraceRecord[], journal: JournalRecord[] = []): CostR
   return { total, anyEstimated, anyExact, present };
 }
 
+function latestRunBadges(
+  detail: Map<number, LeafTraceRecord>,
+): NonNullable<UiPresentation["badges"]> {
+  const latest = new Map<string, NonNullable<UiPresentation["badges"]>[number]>();
+  for (const [, trace] of [...detail].sort(([left], [right]) => left - right)) {
+    for (const presentation of [
+      trace.presentation?.input,
+      trace.presentation?.live,
+      trace.presentation?.output,
+    ]) {
+      for (const badge of presentation?.badges ?? []) latest.set(badge.key, badge);
+    }
+  }
+  return [...latest.values()];
+}
+
 export function renderRunBody(view: RunView): string {
   const { manifest, status, traces } = view;
   const nowMs = view.nowMs ?? Date.now();
@@ -420,6 +461,7 @@ export function renderRunBody(view: RunView): string {
   }
   const events = traces.filter((r): r is RunEventRecord => r.t === "event");
   const cost = rollupCost(traces, view.journal);
+  const badges = latestRunBadges(detail);
 
   const detailPage =
     view.selectedSeq !== undefined && status.leaves.some((l) => l.seq === view.selectedSeq)
@@ -428,7 +470,7 @@ export function renderRunBody(view: RunView): string {
   const dock = renderDock(status, approvals, view.interactive, nowMs);
 
   return `<div class="mon">
-${renderGlance(manifest, status, gatesBySeq, cost, events, view.interactive, nowMs)}
+${renderGlance(manifest, status, gatesBySeq, cost, events, badges, view.interactive, nowMs)}
 <div class="mbody">
 <div class="main">
 <div class="scroll">
@@ -488,6 +530,7 @@ function renderGlance(
   gatesBySeq: Map<number, ApprovalRequest[]>,
   cost: CostRollup,
   events: RunEventRecord[],
+  badges: NonNullable<UiPresentation["badges"]>,
   interactive: boolean,
   nowMs: number,
 ): string {
@@ -511,6 +554,9 @@ function renderGlance(
   const last = latest
     ? `<div class="g-last"><span class="fts tnum">${fmtClock(latest.atMs)}</span><span class="g-lastmsg">${latest.msg}</span></div>`
     : "";
+  const badgeHtml = badges.length
+    ? `<div class="g-badges">${badges.map(renderRunBadge).join("")}</div>`
+    : "";
   return `<div class="glance">
 <div class="g-h1">
 <span class="logo"></span>
@@ -527,9 +573,30 @@ ${[gates, cancel].filter(Boolean).join("")}
 <div class="g-num"><span class="g-nv tnum${gateCount > 0 ? " gated" : ""}">${gateCount}</span><span class="g-nk">gates</span></div>
 </div>
 <div class="g-prog">${segs}</div>
+${badgeHtml}
 <div class="g-meta"><span>approval <b>${escapeHtml(status.approvalMode)}</b></span><span>writes ${status.allowWrites ? '<b class="okw">granted</b>' : "<b>read-only</b>"}</span><span>started <b>${fmtStampClock(status.startedAtMs)}</b></span></div>
 ${last}
 </div>`;
+}
+
+function safeHttpHref(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function renderRunBadge(
+  badge: NonNullable<UiPresentation["badges"]>[number],
+): string {
+  const content = `${escapeHtml(badge.label)} <b>${escapeHtml(badge.value)}</b>`;
+  const href = safeHttpHref(badge.href);
+  return href
+    ? `<a class="g-badge ${badge.tone ?? "neutral"}" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${content}</a>`
+    : `<span class="g-badge ${badge.tone ?? "neutral"}">${content}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -668,21 +735,35 @@ function renderLeafRow(
 // ---------------------------------------------------------------------------
 // Gates: inline strip (≥900px) + bottom dock (<900px)
 // ---------------------------------------------------------------------------
-function approveButtons(a: ApprovalRequest, interactive: boolean, btnCls: string): string {
-  const buttons = interactive
-    ? `<button class="${btnCls} allow" onclick="orcApprove('${escapeHtml(a.id)}','allow')">ALLOW</button><button class="${btnCls} deny" onclick="orcApprove('${escapeHtml(a.id)}','deny')">DENY</button>`
-    : `<span class="resolving">respond with orc approvals</span>`;
-  return buttons;
+function approvalControls(a: ApprovalRequest, interactive: boolean, btnCls: string): string {
+  if (!interactive) return `<span class="resolving">respond with orc approvals</span>`;
+  if (!a.actions?.length) {
+    const allowClass = btnCls === "dw" ? "dw-allow" : `${btnCls} allow`;
+    const denyClass = btnCls === "dw" ? "dw-deny" : `${btnCls} deny`;
+    return `<button class="${allowClass}" onclick="orcApprove('${escapeHtml(a.id)}','allow')">ALLOW</button><button class="${denyClass}" onclick="orcApprove('${escapeHtml(a.id)}','deny')">DENY</button>`;
+  }
+  const buttons = a.actions
+    .map(
+      (action) =>
+        `<button class="${btnCls} act ${action.tone ?? "secondary"}" data-has-message="${action.message ? "1" : "0"}" data-message-label="${escapeHtml(action.message?.label ?? "")}" data-message-required="${action.message?.required ? "1" : "0"}" onclick="orcChooseAction(event,'${escapeHtml(a.id)}','${escapeHtml(action.id)}')">${escapeHtml(action.label)}</button>`,
+    )
+    .join("");
+  const message = a.actions.some((action) => action.message)
+    ? `<div class="appr-message" hidden><label></label><textarea></textarea><button class="act primary" onclick="orcSubmitAction(event)">SUBMIT</button></div>`
+    : "";
+  return buttons + message;
 }
 
 function renderGateStrip(a: ApprovalRequest, interactive: boolean, nowMs: number): string {
-  const arg = escapeHtml(bound(toolArgPreview(a.input), 200).replace(/\n/g, " "));
+  const arg = escapeHtml(
+    bound(a.presentation?.summary ?? a.presentation?.title ?? toolArgPreview(a.input), 200).replace(/\n/g, " "),
+  );
   return `<div class="strip-inline" data-approval="${escapeHtml(a.id)}">
 <span class="gate-tag">GATE</span>
 <span class="dk-tool">${escapeHtml(a.toolName)}</span>
 <span class="dk-arg">${arg}</span>
 <span class="dk-wait">waiting <span class="wait-v" data-since="${a.requestedAtMs}">${fmtDuration(nowMs - a.requestedAtMs)}</span></span>
-<span class="appr-actions">${approveButtons(a, interactive, "sbtn")}</span>
+<span class="appr-actions">${approvalControls(a, interactive, "sbtn")}</span>
 </div>`;
 }
 
@@ -691,12 +772,14 @@ function renderDock(status: RunStatus, approvals: ApprovalRequest[], interactive
   const a = approvals[0];
   if (!a) return "";
   const leaf = status.leaves.find((l) => l.seq === a.seq);
-  const arg = escapeHtml(bound(toolArgPreview(a.input), 200).replace(/\n/g, " "));
+  const arg = escapeHtml(
+    bound(a.presentation?.summary ?? a.presentation?.title ?? toolArgPreview(a.input), 200).replace(/\n/g, " "),
+  );
   const where = leaf ? ` · ${leaf.readOnly ? "read-only" : "write"} leaf` : "";
   return `<div class="dock" data-approval="${escapeHtml(a.id)}">
 <div class="dk-line"><span class="gate-tag">GATE</span><span class="dk-tool">${leaf ? `${leaf.kind}#${leaf.seq} · ` : ""}${escapeHtml(a.toolName)}</span><span class="dk-arg">${arg}</span></div>
 <div class="dk-line"><span class="dk-wait">waiting <span class="wait-v" data-since="${a.requestedAtMs}">${fmtDuration(nowMs - a.requestedAtMs)}</span>${where}</span></div>
-<div class="dk-btns appr-actions">${approveButtons(a, interactive, "abtn")}</div>
+<div class="dk-btns appr-actions">${approvalControls(a, interactive, "abtn")}</div>
 </div>`;
 }
 
@@ -722,6 +805,40 @@ function renderDetail(
 <div class="d-title"><span class="seq">${leaf.kind}#${leaf.seq}</span>${leaf.id ? " " + escapeHtml(leaf.id) : ""}</div>
 ${renderLaneContent(view, leaf, detail, gates, nowMs)}
 </div>
+</div>`;
+}
+
+function renderPresentation(presentation: UiPresentation | undefined, fallbackTitle?: string): string {
+  if (!presentation) return "";
+  const title = presentation.title ?? fallbackTitle;
+  const fields = presentation.fields?.length
+    ? `<div class="present-fields">${presentation.fields
+        .map((field) => {
+          const href = field.kind === "url" ? safeHttpHref(field.value) : undefined;
+          const value = href
+            ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(field.value)}</a>`
+            : field.kind === "code" || field.kind === "path"
+              ? `<code>${escapeHtml(field.value)}</code>`
+              : escapeHtml(field.value);
+          return `<span class="pk">${escapeHtml(field.label)}</span><span class="pv">${value}</span>`;
+        })
+        .join("")}</div>`
+    : "";
+  const documents = (presentation.documents ?? [])
+    .map((document) => {
+      const metadata = [document.path, document.sha256].filter(Boolean).map(String).join(" · ");
+      const content =
+        document.content !== undefined
+          ? `<div class="box">${escapeHtml(document.content)}</div>`
+          : `<div class="static-note">content snapshot unavailable</div>`;
+      return `<details class="present-doc"><summary>${escapeHtml(document.label)}</summary><div class="doc-meta">${escapeHtml(metadata)}</div>${content}</details>`;
+    })
+    .join("");
+  return `<div class="present">
+${title ? `<div class="present-title">${escapeHtml(title)}</div>` : ""}
+${presentation.summary ? `<div class="present-summary">${escapeHtml(presentation.summary)}</div>` : ""}
+${fields}
+${documents}
 </div>`;
 }
 
@@ -752,6 +869,9 @@ function renderLaneContent(
   meta.push(`<span class="k">idle timeout</span><span class="v">${idle}</span>`);
 
   const gateBlock = gated ? renderDetailGate(gates[0], view.interactive) : "";
+  const inputPresentation = renderPresentation(tr?.presentation?.input, "Extension input");
+  const livePresentation = renderPresentation(tr?.presentation?.live, "Live extension state");
+  const outputPresentation = renderPresentation(tr?.presentation?.output, "Extension result");
 
   const promptSec = tr?.prompt
     ? `<div class="dw-sec"><div class="dw-sec-hdr">Prompt</div><div class="box capped">${escapeHtml(bound(tr.prompt, 6000))}</div></div>`
@@ -789,7 +909,7 @@ function renderLaneContent(
     : "";
 
   return `<div class="dw-meta">${meta.join("")}</div>
-${gateBlock}${promptSec}${outputSec}${errSec}${toolsSec}${renderHarnessLog(view, leaf.seq)}${usageSec}`;
+${gateBlock}${inputPresentation}${livePresentation}${outputPresentation}${promptSec}${outputSec}${errSec}${toolsSec}${renderHarnessLog(view, leaf.seq)}${usageSec}`;
 }
 
 /**
@@ -824,11 +944,14 @@ function renderDetailGate(a: ApprovalRequest, interactive: boolean): string {
     .map((l) => (l.startsWith("+") ? `<span class="add">${l}</span>` : l.startsWith("-") || l.startsWith("−") ? `<span class="del">${l}</span>` : l))
     .join("\n");
   const actions = interactive
-    ? `<div class="actions appr-actions"><button class="dw-allow" onclick="orcApprove('${escapeHtml(a.id)}','allow')">ALLOW</button><button class="dw-deny" onclick="orcApprove('${escapeHtml(a.id)}','deny')">DENY</button></div>`
+    ? `<div class="actions appr-actions">${approvalControls(a, true, a.actions?.length ? "" : "dw")}</div>`
     : `<div class="static-note">respond with <b>orc approvals</b></div>`;
+  const body = a.presentation
+    ? renderPresentation(a.presentation)
+    : `<div class="box">${boxHtml}</div>`;
   return `<div class="dw-gate" data-approval="${escapeHtml(a.id)}">
 <div class="dw-gtitle"><span class="gate-tag">GATE</span><span class="wants">wants <b>${escapeHtml(a.toolName)}</b> · outside auto-approved scope</span></div>
-<div class="box">${boxHtml}</div>
+${body}
 ${actions}
 </div>`;
 }
@@ -960,11 +1083,45 @@ function layoutBars(){
 function tick(){ if(layoutBars()) requestAnimationFrame(tick); }
 var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches;
 
-window.orcApprove = function(id, behavior){
+function postApproval(id, body){
   app.querySelectorAll('[data-approval="'+id+'"] .appr-actions').forEach(function(el){
-    el.innerHTML = '<span class="resolving">'+(behavior==="allow"?"allowing":"denying")+'…</span>';
+    el.innerHTML = '<span class="resolving">submitting…</span>';
   });
-  fetch(base + "/approvals/" + encodeURIComponent(id), {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({behavior:behavior})}).then(function(){ setTimeout(refresh,1500); });
+  fetch(base + "/approvals/" + encodeURIComponent(id), {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){
+    if(!r.ok) return r.text().then(function(message){ throw new Error(message); });
+    setTimeout(refresh,1500);
+  }).catch(function(){ refresh(); });
+}
+window.orcApprove = function(id, behavior){ postApproval(id, {behavior:behavior}); };
+window.orcChooseAction = function(event, id, action){
+  event.stopPropagation();
+  var button = event.currentTarget;
+  if(button.getAttribute("data-has-message") !== "1"){
+    postApproval(id, {action:action});
+    return;
+  }
+  var root = button.closest('[data-approval="'+id+'"]');
+  var pane = root && root.querySelector(".appr-message");
+  if(!pane) return;
+  pane.hidden = false;
+  pane.setAttribute("data-approval-id", id);
+  pane.setAttribute("data-action", action);
+  pane.setAttribute("data-required", button.getAttribute("data-message-required") || "0");
+  pane.querySelector("label").textContent = button.getAttribute("data-message-label") || "Message";
+  pane.querySelector("textarea").focus();
+};
+window.orcSubmitAction = function(event){
+  event.stopPropagation();
+  var pane = event.currentTarget.closest(".appr-message");
+  var message = pane.querySelector("textarea").value;
+  if(pane.getAttribute("data-required") === "1" && !message.trim()){
+    pane.querySelector("textarea").focus();
+    return;
+  }
+  postApproval(pane.getAttribute("data-approval-id"), {
+    action:pane.getAttribute("data-action"),
+    message:message
+  });
 };
 window.orcCancel = function(){ fetch(base + "/cancel", {method:"POST"}).then(function(){ setTimeout(refresh,500); }); };
 

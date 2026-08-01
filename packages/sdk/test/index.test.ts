@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runPaths, type RunManifest } from "@karowanorg/orc-core";
+import { JsonlAppender, readControl, runPaths, type RunManifest, type TraceRecord } from "@karowanorg/orc-core";
 import { Orc } from "@karowanorg/orc-sdk";
 
 let home: string;
@@ -103,5 +103,50 @@ if (process.argv.includes("--capabilities")) {
     const status = await new Orc().run("still_running").wait(1);
     expect(status.state).toBe("running");
     expect(Date.now() - started).toBeLessThan(2_500);
+  });
+
+  it("responds to a pending approval through the public SDK", async () => {
+    writeRunningRun("approval_run");
+    const traces = new JsonlAppender<TraceRecord>(runPaths("approval_run").traces);
+    traces.append({
+      t: "event",
+      atMs: Date.now(),
+      event: {
+        kind: "approval-requested",
+        approval: {
+          id: "a_1",
+          runId: "approval_run",
+          seq: 0,
+          toolName: "example.document-gate",
+          input: {},
+          actions: [
+            {
+              id: "revise",
+              label: "Request revision",
+              behavior: "deny",
+              message: { label: "Instructions", required: true },
+            },
+          ],
+          requestedAtMs: Date.now(),
+        },
+      },
+    });
+    traces.close();
+
+    await new Orc().respond("approval_run", "a_1", {
+      action: "revise",
+      message: "Add rollback criteria",
+    });
+    expect(readControl("approval_run")).toMatchObject([
+      {
+        t: "approval",
+        approvalId: "a_1",
+        decision: {
+          behavior: "deny",
+          action: "revise",
+          message: "Add rollback criteria",
+        },
+      },
+    ]);
   });
 });

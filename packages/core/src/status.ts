@@ -1,4 +1,5 @@
 import type {
+  ApprovalDecision,
   ApprovalRequest,
   JournalRecord,
   LeafStatus,
@@ -9,6 +10,45 @@ import type {
   TraceRecord,
 } from "./contracts.js";
 import { readJournal, readManifest, readTraces } from "./rundir.js";
+
+export interface ApprovalResponse {
+  behavior?: ApprovalDecision["behavior"];
+  action?: string;
+  message?: string;
+}
+
+/**
+ * Resolve either a legacy allow/deny response or a named action. Named actions
+ * derive their behavior from the request so callers cannot change semantics.
+ */
+export function resolveApprovalDecision(
+  approval: ApprovalRequest,
+  response: ApprovalResponse,
+): ApprovalDecision {
+  if (response.action !== undefined) {
+    const action = approval.actions?.find((candidate) => candidate.id === response.action);
+    if (!action) throw new Error(`approval action "${response.action}" is not available`);
+    if (response.behavior !== undefined && response.behavior !== action.behavior) {
+      throw new Error(`approval action "${action.id}" requires behavior "${action.behavior}"`);
+    }
+    if (action.message?.required && !response.message?.trim()) {
+      throw new Error(`approval action "${action.id}" requires a message`);
+    }
+    return {
+      behavior: action.behavior,
+      action: action.id,
+      ...(response.message !== undefined ? { message: response.message } : {}),
+    };
+  }
+  if (approval.actions?.length) throw new Error("a named approval action is required");
+  if (response.behavior !== "allow" && response.behavior !== "deny") {
+    throw new Error('behavior must be "allow" or "deny"');
+  }
+  return {
+    behavior: response.behavior,
+    ...(response.message !== undefined ? { message: response.message } : {}),
+  };
+}
 
 /**
  * Pure projection: journal (deterministic status) + trace sidecar (detail,

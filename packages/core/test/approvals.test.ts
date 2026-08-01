@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { prepareRun, superviseRun, type Registry } from "../src/supervisor.js";
 import { appendControl, JsonlAppender, readResult, readTraces, runPaths } from "../src/rundir.js";
 import { openApprovals } from "../src/status.js";
-import type { Harness } from "../src/contracts.js";
+import type { ExtensionLeaf, Harness } from "../src/contracts.js";
 import { fakeExecutor } from "./helpers/fake.js";
 
 let home: string;
@@ -48,6 +48,142 @@ async function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
 }
 
 describe("permission bubbling (end to end)", () => {
+  it("projects extension UI data and resolves named approval actions", async () => {
+    const extension: ExtensionLeaf = {
+      name: "presented_gate",
+      readOnly: true,
+      present: {
+        input: () => ({
+          title: "Requirements gate",
+          documents: [
+            {
+              label: "Requirements",
+              path: "/tmp/requirements.md",
+              content: "x".repeat(140 * 1024),
+            },
+          ],
+        }),
+        output: (_payload, result) => ({
+          title: "Gate result",
+          fields: [{ label: "Action", value: String((result as { action?: unknown }).action) }],
+        }),
+      },
+      async execute(_payload, ctx) {
+        const live = {
+          title: "Live gate state",
+          fields: [{ label: "State", value: "waiting" }],
+          badges: [{ key: "live-state", label: "State", value: "waiting" }],
+        };
+        ctx.present(live);
+        ctx.present(live);
+        return ctx.requestApproval({
+          runId: "spoofed",
+          seq: 999,
+          toolName: "example.document-gate",
+          input: { secret: "raw payload is not projected" },
+          presentation: { title: "Approve requirements", summary: "<script>unsafe</script>" },
+          actions: [
+            { id: "approve", label: "Approve", behavior: "allow", tone: "primary" },
+            {
+              id: "revise",
+              label: "Request revision",
+              behavior: "deny",
+              message: { label: "Instructions", required: true },
+            },
+          ],
+        });
+      },
+    };
+    const reg = { ...registry(), extensions: new Map([[extension.name, extension]]) };
+    const program = path.join(home, "presented-gate.orc.ts");
+    fs.writeFileSync(program, `export default async ({ ext }: any) => ext.presented_gate({ hidden: "value" });\n`);
+    const manifest = await prepareRun({ programPath: program, cwd: home, brief: "b" }, reg);
+    const running = superviseRun(manifest.runId, reg);
+
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length === 1);
+    const pending = openApprovals(readTraces(manifest.runId))[0]!;
+    const runningLeaves = readTraces(manifest.runId).filter((record) => record.t === "leaf");
+    expect(runningLeaves).toHaveLength(2);
+    expect(runningLeaves.at(-1)?.t === "leaf" ? runningLeaves.at(-1)?.presentation?.live : undefined).toMatchObject({
+      title: "Live gate state",
+      fields: [{ label: "State", value: "waiting" }],
+    });
+    expect(pending).toMatchObject({
+      runId: manifest.runId,
+      seq: 0,
+      presentation: { title: "Approve requirements", summary: "<script>unsafe</script>" },
+      actions: [
+        { id: "approve", behavior: "allow" },
+        { id: "revise", behavior: "deny", message: { required: true } },
+      ],
+    });
+    appendControl(manifest.runId, {
+      t: "approval",
+      approvalId: pending.id,
+      decision: { behavior: "deny", action: "revise", message: "Add rollback criteria" },
+      by: "test",
+      atMs: Date.now(),
+    });
+
+    const status = await running;
+    const result = readResult(runPaths(manifest.runId), status.resultSha!) as {
+      behavior: string;
+      action: string;
+      message: string;
+    };
+    expect(result).toEqual({
+      behavior: "deny",
+      action: "revise",
+      message: "Add rollback criteria",
+    });
+    const leaf = readTraces(manifest.runId)
+      .filter((record) => record.t === "leaf" && record.status === "ok")
+      .at(-1);
+    expect(leaf?.t === "leaf" ? leaf.presentation?.output?.fields?.[0]?.value : undefined).toBe("revise");
+    expect(leaf?.t === "leaf" ? leaf.presentation?.live?.fields?.[0]?.value : undefined).toBe("waiting");
+    const content = leaf?.t === "leaf" ? leaf.presentation?.input?.documents?.[0]?.content : undefined;
+    expect(Buffer.byteLength(content ?? "")).toBeLessThan(129 * 1024);
+    expect(content).toContain("truncated");
+    expect(readTraces(manifest.runId).filter((record) => record.t === "leaf")).toHaveLength(3);
+  });
+
+  it("stamps extension approvals with supervisor-owned run and sequence identity", async () => {
+    const extension: ExtensionLeaf = {
+      name: "gate",
+      readOnly: true,
+      async execute(_payload, ctx) {
+        const decision = await ctx.requestApproval({
+          runId: "spoofed",
+          seq: 999,
+          toolName: "example.document-gate",
+          input: { document: "/tmp/requirements.md" },
+        });
+        return { behavior: decision.behavior };
+      },
+    };
+    const reg = {
+      ...registry(),
+      extensions: new Map([["gate", extension]]),
+    };
+    const program = path.join(home, "gate.orc.ts");
+    fs.writeFileSync(program, `export default async ({ ext }: any) => ext.gate({});\n`);
+    const manifest = await prepareRun({ programPath: program, cwd: home, brief: "b" }, reg);
+    const runPromise = superviseRun(manifest.runId, reg);
+
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length === 1);
+    const pending = openApprovals(readTraces(manifest.runId))[0];
+    expect(pending.runId).toBe(manifest.runId);
+    expect(pending.seq).toBe(0);
+    appendControl(manifest.runId, {
+      t: "approval",
+      approvalId: pending.id,
+      decision: { behavior: "allow" },
+      by: "test",
+      atMs: Date.now(),
+    });
+    expect((await runPromise).state).toBe("completed");
+  });
+
   it("honors a cancel queued before the first supervisor starts", async () => {
     const reg = registry();
     const manifest = await launch(reg);

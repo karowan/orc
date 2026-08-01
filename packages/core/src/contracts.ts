@@ -14,6 +14,42 @@ export type Json = null | boolean | number | string | Json[] | { [k: string]: Js
 // ---------------------------------------------------------------------------
 export type ApprovalMode = "manual" | "accept-edits" | "auto" | "bypass";
 
+export interface UiPresentation {
+  title?: string;
+  summary?: string;
+  fields?: Array<{
+    label: string;
+    value: string;
+    kind?: "text" | "code" | "path" | "url";
+  }>;
+  documents?: Array<{
+    label: string;
+    path: string;
+    sha256?: string;
+    mediaType?: "text/plain" | "text/markdown";
+    content?: string;
+  }>;
+  /** Latest badge with a given key is also shown in the run header. */
+  badges?: Array<{
+    key: string;
+    label: string;
+    value: string;
+    href?: string;
+    tone?: "neutral" | "success" | "warning" | "danger";
+  }>;
+}
+
+export interface ApprovalAction {
+  id: string;
+  label: string;
+  behavior: "allow" | "deny";
+  tone?: "primary" | "secondary" | "danger";
+  message?: {
+    label: string;
+    required?: boolean;
+  };
+}
+
 export interface ApprovalRequest {
   id: string;
   runId: string;
@@ -21,10 +57,13 @@ export interface ApprovalRequest {
   toolName: string;
   input: Json;
   requestedAtMs: number;
+  presentation?: UiPresentation;
+  actions?: ApprovalAction[];
 }
 
 export interface ApprovalDecision {
   behavior: "allow" | "deny";
+  action?: string;
   message?: string; // reason shown to the model on deny
 }
 
@@ -131,6 +170,11 @@ export interface HarnessContext {
   log(message: string): void;
 }
 
+export interface ExtensionContext extends HarnessContext {
+  /** Replace the trace-only live presentation for this extension leaf. */
+  present(presentation: UiPresentation): void;
+}
+
 export interface Harness {
   readonly name: string;
   discover(ctx: { executor: Executor }): Promise<HarnessCapabilities>;
@@ -152,7 +196,15 @@ export interface ExtensionLeaf {
   name: string; // program-visible as ext.<name>(payload)
   inputSchema?: Json; // JSON Schema validated at dispatch
   readOnly: boolean;
-  execute(payload: Json, ctx: HarnessContext): Promise<Json>;
+  execute(payload: Json, ctx: ExtensionContext): Promise<Json>;
+  /**
+   * Optional trace-only projection for the generic Orc UI. Projection errors
+   * never affect extension execution, and raw payloads are not persisted.
+   */
+  present?: {
+    input?(payload: Json): UiPresentation | undefined;
+    output?(payload: Json, result: Json): UiPresentation | undefined;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +345,11 @@ export interface LeafTraceRecord {
   costUsd?: number;
   costEstimated?: boolean; // true = derived from a rate table (codex), not billed (claude)
   reoriented?: boolean;
+  presentation?: {
+    input?: UiPresentation;
+    live?: UiPresentation;
+    output?: UiPresentation;
+  };
 }
 
 export interface RunEventRecord {

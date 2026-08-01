@@ -71,4 +71,18 @@ describe("generated CLI flags", () => {
     expect(result.guide).toContain("# orc — how to write and run a program");
     expect(result.guide).not.toContain("## Available on this machine");
   });
+
+  it("exposes named approval actions through the generated respond command", () => {
+    const catalog = JSON.parse(run("commands")) as Array<{
+      name: string;
+      inputSchema: {
+        required?: string[];
+        properties?: Record<string, unknown>;
+      };
+    }>;
+    const respond = catalog.find((entry) => entry.name === "respond");
+    expect(respond?.inputSchema.properties).toHaveProperty("action");
+    expect(respond?.inputSchema.properties).toHaveProperty("behavior");
+    expect(respond?.inputSchema.required).toEqual(["runId", "approvalId"]);
+  });
 });

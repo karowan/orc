@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLock,
+  prepareRun,
   readControl,
   runPaths,
   type JournalRecord,
@@ -15,6 +16,8 @@ import {
   cancel,
   respondApproval,
   resume,
+  buildRegistry,
+  runSupervisorChild,
   spawnDetachedSupervisor,
   type OpContext,
 } from "@karowanorg/orc-ops";
@@ -48,7 +51,7 @@ afterEach(() => {
 
 function writeRun(
   runId: string,
-  options: { completed?: boolean; approvalId?: string } = {},
+  options: { completed?: boolean; approvalId?: string; namedActions?: boolean } = {},
 ): void {
   const paths = runPaths(runId);
   fs.mkdirSync(paths.dir, { recursive: true });
@@ -73,25 +76,50 @@ function writeRun(
     ? [{ t: "finish", status: "completed", resultSha: "result" }]
     : [];
   const traces: TraceRecord[] = options.approvalId
-    ? [{
-        t: "event",
-        atMs: Date.now(),
-        event: {
-          kind: "approval-requested",
-          approval: {
-            id: options.approvalId,
-            runId,
-            seq: 1,
-            toolName: "Bash",
-            input: { command: "echo ok" },
-            requestedAtMs: Date.now(),
+    ? [
+        {
+          t: "event",
+          atMs: Date.now(),
+          event: {
+            kind: "approval-requested",
+            approval: {
+              id: options.approvalId,
+              runId,
+              seq: 1,
+              toolName: "Bash",
+              input: { command: "echo ok" },
+              ...(options.namedActions
+                ? {
+                    actions: [
+                      { id: "approve", label: "Approve", behavior: "allow" as const },
+                      {
+                        id: "revise",
+                        label: "Revise",
+                        behavior: "deny" as const,
+                        message: { label: "Instructions", required: true },
+                      },
+                    ],
+                  }
+                : {}),
+              requestedAtMs: Date.now(),
+            },
           },
         },
-      }]
+      ]
     : [];
   fs.writeFileSync(paths.manifest, JSON.stringify(manifest));
-  fs.writeFileSync(paths.journal, journal.length ? journal.map((record) => JSON.stringify(record)).join("\n") + "\n" : "");
-  fs.writeFileSync(paths.traces, traces.length ? traces.map((record) => JSON.stringify(record)).join("\n") + "\n" : "");
+  fs.writeFileSync(
+    paths.journal,
+    journal.length
+      ? journal.map((record) => JSON.stringify(record)).join("\n") + "\n"
+      : "",
+  );
+  fs.writeFileSync(
+    paths.traces,
+    traces.length
+      ? traces.map((record) => JSON.stringify(record)).join("\n") + "\n"
+      : "",
+  );
 }
 
 describe("control operations", () => {
@@ -105,7 +133,9 @@ describe("control operations", () => {
     ).rejects.toThrow();
 
     writeRun("completed", { completed: true });
-    await expect(cancel.handler({ runId: "completed" }, ctx)).rejects.toThrow("not running");
+    await expect(cancel.handler({ runId: "completed" }, ctx)).rejects.toThrow(
+      "not running",
+    );
     expect(fs.existsSync(runPaths("completed").control)).toBe(false);
   });
 
@@ -125,34 +155,127 @@ describe("control operations", () => {
         ctx,
       ),
     ).resolves.toEqual({ enqueued: true });
-    await expect(cancel.handler({ runId: "running" }, ctx)).resolves.toEqual({ enqueued: true });
-    expect(readControl("running").map((message) => message.t)).toEqual(["approval", "cancel"]);
+    await expect(cancel.handler({ runId: "running" }, ctx)).resolves.toEqual({
+      enqueued: true,
+    });
+    expect(readControl("running").map((message) => message.t)).toEqual([
+      "approval",
+      "cancel",
+    ]);
+  });
+
+  it("derives named action behavior and enforces required messages", async () => {
+    writeRun("named", { approvalId: "gate", namedActions: true });
+    await expect(
+      respondApproval.handler(
+        { runId: "named", approvalId: "gate", action: "revise" },
+        ctx,
+      ),
+    ).rejects.toThrow("requires a message");
+    await expect(
+      respondApproval.handler(
+        { runId: "named", approvalId: "gate", action: "unknown", message: "x" },
+        ctx,
+      ),
+    ).rejects.toThrow("not available");
+    expect(fs.existsSync(runPaths("named").control)).toBe(false);
+
+    await respondApproval.handler(
+      {
+        runId: "named",
+        approvalId: "gate",
+        action: "revise",
+        message: "Add rollback criteria",
+      },
+      ctx,
+    );
+    expect(readControl("named")).toMatchObject([
+      {
+        t: "approval",
+        decision: {
+          behavior: "deny",
+          action: "revise",
+          message: "Add rollback criteria",
+        },
+      },
+    ]);
   });
 });
 
 describe("detached resume preflight", () => {
+  it("signals startup before a synchronous extension can block dispatch", async () => {
+    const configDir = path.join(home, "config");
+    fs.mkdirSync(configDir);
+    fs.writeFileSync(
+      path.join(configDir, "orc.config.mjs"),
+      `export default {
+  extensions: [{
+    name: "startup_check",
+    readOnly: true,
+    async execute() {
+      if (!globalThis.__orcStartupSignalSent) throw new Error("startup was not signaled before dispatch");
+      return { ok: true };
+    }
+  }]
+};
+`,
+    );
+    const programPath = path.join(home, "startup.orc.ts");
+    fs.writeFileSync(
+      programPath,
+      `export default async ({ ext }) => ext.startup_check({});\n`,
+    );
+    const startupGlobal = globalThis as typeof globalThis & {
+      __orcStartupSignalSent?: boolean;
+    };
+    startupGlobal.__orcStartupSignalSent = false;
+    try {
+      const built = await buildRegistry({ cwd: configDir });
+      const manifest = await prepareRun(
+        { programPath, cwd: home, brief: "startup signal test" },
+        built,
+      );
+
+      await expect(
+        runSupervisorChild(manifest.runId, configDir, async (type) => {
+          if (type === "orc-supervisor-ready") {
+            startupGlobal.__orcStartupSignalSent = true;
+          }
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      delete startupGlobal.__orcStartupSignalSent;
+    }
+  });
+
   it("reports child startup errors instead of returning a false success", async () => {
-    await expect(spawnDetachedSupervisor("missing")).rejects.toThrow("manifest.json");
+    await expect(spawnDetachedSupervisor("missing")).rejects.toThrow(
+      "manifest.json",
+    );
   }, 15_000);
 
   it("does not report resumed before supervisor preflight succeeds", async () => {
     writeRun("tampered");
     fs.writeFileSync(runPaths("tampered").program, "not the pinned bundle");
-    await expect(resume.handler({ runId: "tampered", wait: false }, ctx)).rejects.toThrow(
-      "program bundle does not match manifest hash",
-    );
+    await expect(
+      resume.handler({ runId: "tampered", wait: false }, ctx),
+    ).rejects.toThrow("program bundle does not match manifest hash");
   }, 15_000);
 
   it("rejects completed runs before spawning", async () => {
     writeRun("done", { completed: true });
-    await expect(resume.handler({ runId: "done", wait: false }, ctx)).rejects.toThrow("already completed");
+    await expect(
+      resume.handler({ runId: "done", wait: false }, ctx),
+    ).rejects.toThrow("already completed");
   });
 
   it("rejects a run owned by a live supervisor", async () => {
     writeRun("owned");
     const lock = await acquireLock(runPaths("owned"));
     try {
-      await expect(resume.handler({ runId: "owned", wait: false }, ctx)).rejects.toThrow("live supervisor");
+      await expect(
+        resume.handler({ runId: "owned", wait: false }, ctx),
+      ).rejects.toThrow("live supervisor");
     } finally {
       await lock.release();
     }

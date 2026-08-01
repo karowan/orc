@@ -21,6 +21,7 @@ import {
   readManifest,
   readResult,
   readTraces,
+  resolveApprovalDecision,
   runPaths,
   sourceRequestsWrite,
   statusForRun,
@@ -425,18 +426,23 @@ export const respondApproval = defineOp({
   input: z.object({
     runId: RunId,
     approvalId: z.string(),
-    behavior: z.enum(["allow", "deny"]),
+    behavior: z.enum(["allow", "deny"]).optional(),
+    action: z.string().optional(),
     message: z.string().optional(),
   }),
   async handler(input) {
     requireRunningRun(input.runId);
-    if (!openApprovals(readTraces(input.runId)).some((approval) => approval.id === input.approvalId)) {
+    const approval = openApprovals(readTraces(input.runId)).find(
+      (candidate) => candidate.id === input.approvalId,
+    );
+    if (!approval) {
       throw new Error(`approval ${input.approvalId} is not pending for run ${input.runId}`);
     }
+    const decision = resolveApprovalDecision(approval, input);
     appendControl(input.runId, {
       t: "approval",
       approvalId: input.approvalId,
-      decision: { behavior: input.behavior, message: input.message },
+      decision,
       by: "operator",
       atMs: Date.now(),
     });

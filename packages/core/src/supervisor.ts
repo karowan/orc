@@ -12,6 +12,7 @@ import {
   DivergenceError,
   PolicyError,
   type ApprovalDecision,
+  type ApprovalAction,
   type ApprovalRequest,
   type CallRecord,
   type CompletionRecord,
@@ -30,6 +31,7 @@ import {
   type ThunkSpec,
   type ToolCallTrace,
   type TraceRecord,
+  type UiPresentation,
 } from "./contracts.js";
 import { boundString, canonicalJson, digestJson, sha256Hex } from "./canonical.js";
 import { validateAgainstSchema } from "./jsonschema.js";
@@ -49,9 +51,106 @@ import {
   writeResult,
   type RunPaths,
 } from "./rundir.js";
-import { openApprovals, projectStatus, statusForRun } from "./status.js";
+import { openApprovals, projectStatus, resolveApprovalDecision, statusForRun } from "./status.js";
 
 const READ_ONLY_SHUTDOWN_GRACE_MS = 1_000;
+const PRESENTATION_DOCUMENT_BYTES = 128 * 1024;
+
+function normalizePresentation(value: UiPresentation | undefined): UiPresentation | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object") throw new Error("presentation must be an object");
+  const presentation: UiPresentation = {};
+  if (value.title !== undefined) presentation.title = boundString(String(value.title), 512);
+  if (value.summary !== undefined) presentation.summary = boundString(String(value.summary), 4 * 1024);
+  if (value.fields !== undefined) {
+    if (!Array.isArray(value.fields)) throw new Error("presentation fields must be an array");
+    presentation.fields = value.fields.slice(0, 32).map((field) => {
+      if (!field || typeof field !== "object") throw new Error("presentation field must be an object");
+      const kind = field.kind ?? "text";
+      if (!["text", "code", "path", "url"].includes(kind)) {
+        throw new Error(`unknown presentation field kind: ${String(kind)}`);
+      }
+      return {
+        label: boundString(String(field.label), 256),
+        value: boundString(String(field.value), 16 * 1024),
+        kind,
+      };
+    });
+  }
+  if (value.documents !== undefined) {
+    if (!Array.isArray(value.documents)) throw new Error("presentation documents must be an array");
+    presentation.documents = value.documents.slice(0, 8).map((document) => {
+      if (!document || typeof document !== "object") throw new Error("presentation document must be an object");
+      const mediaType = document.mediaType ?? "text/plain";
+      if (mediaType !== "text/plain" && mediaType !== "text/markdown") {
+        throw new Error(`unknown presentation document media type: ${String(mediaType)}`);
+      }
+      return {
+        label: boundString(String(document.label), 256),
+        path: boundString(String(document.path), 8 * 1024),
+        ...(document.sha256 !== undefined ? { sha256: boundString(String(document.sha256), 256) } : {}),
+        mediaType,
+        ...(document.content !== undefined
+          ? { content: boundString(String(document.content), PRESENTATION_DOCUMENT_BYTES) }
+          : {}),
+      };
+    });
+  }
+  if (value.badges !== undefined) {
+    if (!Array.isArray(value.badges)) throw new Error("presentation badges must be an array");
+    presentation.badges = value.badges.slice(0, 16).map((badge) => {
+      if (!badge || typeof badge !== "object") throw new Error("presentation badge must be an object");
+      const tone = badge.tone ?? "neutral";
+      if (!["neutral", "success", "warning", "danger"].includes(tone)) {
+        throw new Error(`unknown presentation badge tone: ${String(tone)}`);
+      }
+      return {
+        key: boundString(String(badge.key), 128),
+        label: boundString(String(badge.label), 256),
+        value: boundString(String(badge.value), 2 * 1024),
+        ...(badge.href !== undefined ? { href: boundString(String(badge.href), 8 * 1024) } : {}),
+        tone,
+      };
+    });
+  }
+  return presentation;
+}
+
+function normalizeApprovalActions(actions: ApprovalAction[] | undefined): ApprovalAction[] | undefined {
+  if (actions === undefined) return undefined;
+  if (!Array.isArray(actions) || actions.length === 0 || actions.length > 8) {
+    throw new Error("approval actions must contain between 1 and 8 entries");
+  }
+  const ids = new Set<string>();
+  return actions.map((action) => {
+    if (!action || typeof action !== "object") throw new Error("approval action must be an object");
+    if (!/^[a-zA-Z0-9_-]+$/.test(action.id) || ids.has(action.id)) {
+      throw new Error(`invalid or duplicate approval action id: ${String(action.id)}`);
+    }
+    ids.add(action.id);
+    if (action.behavior !== "allow" && action.behavior !== "deny") {
+      throw new Error(`invalid behavior for approval action "${action.id}"`);
+    }
+    const tone = action.tone ?? "secondary";
+    if (!["primary", "secondary", "danger"].includes(tone)) {
+      throw new Error(`invalid tone for approval action "${action.id}"`);
+    }
+    return {
+      id: action.id,
+      label: boundString(String(action.label), 256),
+      behavior: action.behavior,
+      tone,
+      ...(action.message
+        ? {
+            message: {
+              label: boundString(String(action.message.label), 256),
+              required: action.message.required === true,
+            },
+          }
+        : {}),
+    };
+  });
+}
 
 export interface Registry {
   harnesses: Map<string, Harness>;
@@ -77,6 +176,8 @@ export interface LaunchOptions {
 }
 
 export interface SupervisorHooks {
+  /** Called after preflight succeeds and immediately before live dispatch. */
+  onReady?(runId: string): void;
   /** Called (debounced by the caller if desired) after journal/trace appends. */
   onUpdate?(runId: string): void;
 }
@@ -187,7 +288,10 @@ class Supervisor {
   private completed: LeafOutcome[] = [];
   private completionSignal: (() => void) | null = null;
   private attemptBySeq = new Map<number, number>();
-  private pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
+  private pendingApprovals = new Map<
+    string,
+    { approval: ApprovalRequest; settle: (decision: ApprovalDecision) => void }
+  >();
   private controlConsumed = 0;
   private cancelled = false;
   private terminalError: string | null = null;
@@ -400,6 +504,7 @@ class Supervisor {
       }
 
       // ---- live loop -------------------------------------------------------
+      this.hooks.onReady?.(this.manifest.runId);
       await this.liveLoop();
     }
 
@@ -741,6 +846,10 @@ class Supervisor {
     let sessionId: string | undefined;
     let resolvedModel: string | undefined = spec.model;
     let resolvedEffort: string | undefined = spec.reasoningEffort;
+    let presentationInput: UiPresentation | undefined;
+    let presentationLive: UiPresentation | undefined;
+    let presentationLiveDigest: string | undefined;
+    let presentationOutput: UiPresentation | undefined;
 
     const base: Omit<LeafTraceRecord, "rev" | "status"> = {
       t: "leaf",
@@ -778,7 +887,31 @@ class Supervisor {
       );
       this.hooks.onUpdate?.(this.manifest.runId);
     };
-    emitTrace("running");
+
+    let extension: ExtensionLeaf | undefined;
+    if (spec.kind.startsWith("ext:")) {
+      const name = spec.kind.slice(4);
+      extension = this.registry.extensions.get(name);
+      if (extension?.present?.input) {
+        try {
+          presentationInput = normalizePresentation(extension.present.input(spec.payload ?? null));
+        } catch (error) {
+          this.harnessLog(
+            seq,
+            `extension input presentation failed: ${String(error instanceof Error ? error.message : error)}`,
+          );
+        }
+      }
+    }
+    const presentation = (): LeafTraceRecord["presentation"] | undefined =>
+      presentationInput || presentationLive || presentationOutput
+        ? {
+            ...(presentationInput ? { input: presentationInput } : {}),
+            ...(presentationLive ? { live: presentationLive } : {}),
+            ...(presentationOutput ? { output: presentationOutput } : {}),
+          }
+        : undefined;
+    emitTrace("running", { presentation: presentation() });
 
     const ctx = {
       executor,
@@ -786,16 +919,49 @@ class Supervisor {
       // Harness stderr/tracing is per-leaf detail, not run narrative: record it
       // as an hlog trace (drawer's collapsed "Harness log"), never as a feed event.
       log: (m: string) => this.harnessLog(seq, m),
-      requestApproval: (req: Omit<ApprovalRequest, "id" | "requestedAtMs">) => this.bridgeApproval(req, leaf),
+      present: (value: UiPresentation) => {
+        try {
+          const normalized = normalizePresentation(value);
+          const digest = canonicalJson(normalized as unknown as Json);
+          if (digest === presentationLiveDigest) return;
+          presentationLive = normalized;
+          presentationLiveDigest = digest;
+          emitTrace("running", { presentation: presentation() });
+        } catch (error) {
+          this.harnessLog(
+            seq,
+            `extension live presentation failed: ${String(error instanceof Error ? error.message : error)}`,
+          );
+        }
+      },
+      requestApproval: (req: Omit<ApprovalRequest, "id" | "requestedAtMs">) =>
+        this.bridgeApproval(
+          {
+            ...req,
+            runId: this.manifest.runId,
+            seq,
+          },
+          leaf,
+        ),
     };
 
     try {
       if (spec.kind.startsWith("ext:")) {
         const name = spec.kind.slice(4);
-        const ext = this.registry.extensions.get(name);
+        const ext = extension;
         if (!ext) throw new Error(`unknown extension leaf: ext.${name} (register it in orc.config)`);
         const value = this.validateResult((await ext.execute(spec.payload ?? null, ctx)) ?? null);
-        emitTrace("ok", { endMs: Date.now(), output: value }, true);
+        if (ext.present?.output) {
+          try {
+            presentationOutput = normalizePresentation(ext.present.output(spec.payload ?? null, value));
+          } catch (error) {
+            this.harnessLog(
+              seq,
+              `extension output presentation failed: ${String(error instanceof Error ? error.message : error)}`,
+            );
+          }
+        }
+        emitTrace("ok", { endMs: Date.now(), output: value, presentation: presentation() }, true);
         return { status: "ok", value };
       }
 
@@ -883,7 +1049,7 @@ class Supervisor {
       return { status: "ok", value: result };
     } catch (err) {
       const msg = boundString(String(err instanceof Error ? (err.message ?? err) : err), this.policy.maxErrorBytes);
-      emitTrace("error", { endMs: Date.now(), error: msg }, true);
+      emitTrace("error", { endMs: Date.now(), error: msg, presentation: presentation() }, true);
       return { status: "error", error: msg };
     }
   }
@@ -953,16 +1119,25 @@ class Supervisor {
       return Promise.resolve({ behavior: "deny", message: "leaf is no longer running" });
     }
     const id = `a_${leaf.seq}_${randomUUID()}`;
-    const approval: ApprovalRequest = { ...req, id, requestedAtMs: Date.now() };
+    const presentation = normalizePresentation(req.presentation);
+    const actions = normalizeApprovalActions(req.actions);
+    const approval: ApprovalRequest = {
+      ...req,
+      ...(presentation ? { presentation } : {}),
+      ...(actions ? { actions } : {}),
+      id,
+      requestedAtMs: Date.now(),
+    };
     this.traceEvent({ kind: "approval-requested", approval });
     return new Promise<ApprovalDecision>((resolve) => {
       const settle = (d: ApprovalDecision) => {
         this.pendingApprovals.delete(id);
         resolve(d);
       };
-      this.pendingApprovals.set(id, settle);
+      const pending = { approval, settle };
+      this.pendingApprovals.set(id, pending);
       leaf.abort.signal.addEventListener("abort", () => {
-        if (this.pendingApprovals.get(id) !== settle) return;
+        if (this.pendingApprovals.get(id) !== pending) return;
         const decision = { behavior: "deny", message: "leaf aborted while approval was pending" } as const;
         this.traceEvent({ kind: "approval-resolved", approvalId: id, decision, by: "supervisor" });
         settle(decision);
@@ -986,10 +1161,18 @@ class Supervisor {
       const msg: ControlMessage = messages[i];
       if (msg.t === "cancel") this.cancelled = true;
       if (msg.t === "approval") {
-        const settle = this.pendingApprovals.get(msg.approvalId);
-        if (settle) {
-          this.traceEvent({ kind: "approval-resolved", approvalId: msg.approvalId, decision: msg.decision, by: msg.by });
-          settle(msg.decision);
+        const pending = this.pendingApprovals.get(msg.approvalId);
+        if (pending) {
+          try {
+            const decision = resolveApprovalDecision(pending.approval, msg.decision);
+            this.traceEvent({ kind: "approval-resolved", approvalId: msg.approvalId, decision, by: msg.by });
+            pending.settle(decision);
+          } catch (error) {
+            this.harnessLog(
+              pending.approval.seq,
+              `invalid approval response ignored: ${String(error instanceof Error ? error.message : error)}`,
+            );
+          }
         }
       }
     }

@@ -2,7 +2,10 @@ import { readManifest, superviseRun } from "@karowanorg/orc-core";
 import { writeReport } from "@karowanorg/orc-ui";
 import { buildRegistry } from "./registry.js";
 
-async function signalStartup(type: "orc-supervisor-ready" | "orc-supervisor-error", message?: string): Promise<void> {
+async function signalStartup(
+  type: "orc-supervisor-ready" | "orc-supervisor-error",
+  message?: string,
+): Promise<void> {
   if (typeof process.send !== "function") return;
   await new Promise<void>((resolve) => {
     try {
@@ -20,22 +23,17 @@ async function signalStartup(type: "orc-supervisor-ready" | "orc-supervisor-erro
 export async function runSupervisorChild(
   runId: string,
   registryCwd = process.env.ORC_SUPERVISOR_REGISTRY_CWD,
+  startupSignal = signalStartup,
 ): Promise<void> {
   let lastReportAt = 0;
-  let settled = false;
-  let startupQueued = false;
   let startupSignaled = false;
-  const onUpdate = (id: string) => {
-    if (!startupQueued) {
-      startupQueued = true;
-      // superviseRun also calls onUpdate from its finally block. Deferring one
-      // turn lets a preflight rejection win and report an error instead.
-      setImmediate(() => {
-        if (settled || startupSignaled) return;
-        startupSignaled = true;
-        void signalStartup("orc-supervisor-ready");
-      });
+  const onReady = () => {
+    if (!startupSignaled) {
+      startupSignaled = true;
+      void startupSignal("orc-supervisor-ready");
     }
+  };
+  const onUpdate = (id: string) => {
     if (Date.now() - lastReportAt <= 1_000) return;
     lastReportAt = Date.now();
     try {
@@ -47,18 +45,19 @@ export async function runSupervisorChild(
   try {
     const registry = await buildRegistry({ cwd: registryCwd });
     readManifest(runId);
-    await superviseRun(runId, registry, { onUpdate });
-    settled = true;
+    await superviseRun(runId, registry, { onReady, onUpdate });
     if (!startupSignaled) {
       startupSignaled = true;
-      await signalStartup("orc-supervisor-ready");
+      await startupSignal("orc-supervisor-ready");
     }
     writeReport(runId);
   } catch (err) {
-    settled = true;
     if (!startupSignaled) {
       startupSignaled = true;
-      await signalStartup("orc-supervisor-error", String(err instanceof Error ? err.message : err));
+      await startupSignal(
+        "orc-supervisor-error",
+        String(err instanceof Error ? err.message : err),
+      );
     }
     throw err;
   }

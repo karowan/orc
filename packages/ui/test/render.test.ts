@@ -92,6 +92,86 @@ describe("renderReportHtml (responsive design)", () => {
     expect(html).toContain('class="c-row gated"');
   });
 
+  it("renders extension presentations, latest badges, and named gate actions safely", () => {
+    const { manifest, status, traces } = fixture();
+    const completed = traces.find(
+      (trace) => trace.t === "leaf" && trace.seq === 1 && trace.status === "ok",
+    );
+    if (!completed || completed.t !== "leaf") throw new Error("missing completed leaf");
+    completed.presentation = {
+      live: {
+        title: "Live workflow state",
+        fields: [{ label: "State", value: "open" }],
+        badges: [{ key: "workflow-state", label: "State", value: "open" }],
+      },
+      output: {
+        title: "Workflow result",
+        fields: [
+          { label: "Path", value: "/tmp/<unsafe>.md", kind: "path" },
+          { label: "CR", value: "javascript:alert(1)", kind: "url" },
+        ],
+        documents: [
+          {
+            label: "Requirements",
+            path: "/tmp/requirements.md",
+            content: "# Requirements\n<script>alert(1)</script>",
+          },
+        ],
+        badges: [
+          {
+            key: "review",
+            label: "Review",
+            value: "review-123",
+            href: "https://example.com/reviews/123",
+            tone: "success",
+          },
+        ],
+      },
+    };
+    const approvalEvent = traces.find(
+      (trace) => trace.t === "event" && trace.event.kind === "approval-requested",
+    );
+    if (!approvalEvent || approvalEvent.t !== "event" || approvalEvent.event.kind !== "approval-requested") {
+      throw new Error("missing approval");
+    }
+    approvalEvent.event.approval.presentation = {
+      title: "Requirements approval",
+      summary: "Review the physical document",
+    };
+    approvalEvent.event.approval.actions = [
+      { id: "approve", label: "Approve", behavior: "allow", tone: "primary" },
+      {
+        id: "revise",
+        label: "Request revision",
+        behavior: "deny",
+        message: { label: "Revision instructions", required: true },
+      },
+      { id: "stop", label: "Stop run", behavior: "deny", tone: "danger" },
+    ];
+
+    const html = renderLivePage({ manifest, status, traces, selectedSeq: 1 });
+    expect(html).toContain("Live workflow state");
+    expect(html).toContain("open");
+    expect(html).toContain("Workflow result");
+    expect(html).toContain("/tmp/&lt;unsafe&gt;.md");
+    expect(html).not.toContain('href="javascript:');
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(html).toContain('class="g-badge success"');
+    expect(html).toContain("review-123");
+
+    const gate = renderLivePage({ manifest, status, traces, selectedSeq: 2 });
+    expect(gate).toContain("Requirements approval");
+    expect(gate).toContain("Request revision");
+    expect(gate).toContain("Revision instructions");
+    expect(gate).toContain("orcChooseAction");
+    expect(gate).toContain("<textarea>");
+
+    const report = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 2 });
+    expect(report).toContain("Requirements approval");
+    expect(report).toContain("respond with <b>orc approvals</b>");
+    expect(report).not.toContain("orcChooseAction");
+  });
+
   it("escapes HTML in prompts and never emits script tags in the static report", () => {
     const { manifest, status, traces } = fixture();
     // Select the leaf whose prompt carries the XSS payload so it renders in the detail view.

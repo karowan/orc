@@ -44,6 +44,13 @@ describe("orc mcp (stdio)", () => {
       expect(launchSchema.required).toContain("programPath");
       expect(launchSchema.required).toContain("brief");
       expect(launchSchema.properties).toHaveProperty("cwd");
+      const respondSchema = byName.get("orc_respond")!.inputSchema as {
+        required?: string[];
+        properties?: Record<string, unknown>;
+      };
+      expect(respondSchema.properties).toHaveProperty("action");
+      expect(respondSchema.properties).toHaveProperty("behavior");
+      expect(respondSchema.required).toEqual(["runId", "approvalId"]);
 
       // calls work end-to-end over stdio
       const list = await client.callTool({ name: "orc_list", arguments: {} });

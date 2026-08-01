@@ -5,7 +5,17 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type { ControlMessage, LeafTraceRecord, RunEventRecord, TraceRecord } from "@karowanorg/orc-core";
-import { appendControl, listRuns, orcHome, readJournal, readManifest, readTraces, runPaths } from "@karowanorg/orc-core";
+import {
+  appendControl,
+  listRuns,
+  openApprovals,
+  orcHome,
+  readJournal,
+  readManifest,
+  readTraces,
+  resolveApprovalDecision,
+  runPaths,
+} from "@karowanorg/orc-core";
 import { statusForRun } from "@karowanorg/orc-core";
 import { renderIndexPage, renderLivePage, renderRunBody } from "./render.js";
 
@@ -201,22 +211,36 @@ export class MonitorServer {
         if (rest.length === 2 && rest[0] === "approvals") {
           const approvalId = rest[1]!;
           if (!ID_RE.test(approvalId)) return this.sendText(res, 400, "invalid approval id");
-          let parsed: { behavior?: unknown; message?: unknown };
+          let parsed: { behavior?: unknown; action?: unknown; message?: unknown };
           try {
             parsed = JSON.parse((await readBody(req)) || "{}") as typeof parsed;
           } catch {
             return this.sendText(res, 400, "invalid JSON body");
           }
-          if (parsed.behavior !== "allow" && parsed.behavior !== "deny") {
-            return this.sendText(res, 400, 'behavior must be "allow" or "deny"');
+          const approval = openApprovals(readTraces(runId)).find(
+            (candidate) => candidate.id === approvalId,
+          );
+          if (!approval) return this.sendText(res, 409, "approval is not pending");
+          let decision;
+          try {
+            decision = resolveApprovalDecision(approval, {
+              ...(parsed.behavior === "allow" || parsed.behavior === "deny"
+                ? { behavior: parsed.behavior }
+                : {}),
+              ...(typeof parsed.action === "string" ? { action: parsed.action } : {}),
+              ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
+            });
+          } catch (error) {
+            return this.sendText(
+              res,
+              400,
+              String(error instanceof Error ? error.message : error),
+            );
           }
           const msg: ControlMessage = {
             t: "approval",
             approvalId,
-            decision: {
-              behavior: parsed.behavior,
-              ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
-            },
+            decision,
             by: "ui",
             atMs: Date.now(),
           };

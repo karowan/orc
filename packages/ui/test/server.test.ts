@@ -141,6 +141,57 @@ describe("MonitorServer", () => {
     expect(msg.decision).toEqual({ behavior: "deny", message: "not on my watch" });
   });
 
+  it("POST named actions derives behavior and validates required messages", async () => {
+    fs.appendFileSync(
+      run.tracesPath,
+      JSON.stringify({
+        t: "event",
+        atMs: Date.now(),
+        event: {
+          kind: "approval-requested",
+          approval: {
+            id: "named_gate",
+            runId: run.runId,
+            seq: 2,
+            toolName: "example.document-gate",
+            input: {},
+            actions: [
+              {
+                id: "revise",
+                label: "Request revision",
+                behavior: "deny",
+                message: { label: "Instructions", required: true },
+              },
+            ],
+            requestedAtMs: Date.now(),
+          },
+        },
+      }) + "\n",
+    );
+    const missing = await fetch(`${url}/runs/${run.runId}/approvals/named_gate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "revise" }),
+    });
+    expect(missing.status).toBe(400);
+    expect(fs.existsSync(run.controlPath)).toBe(false);
+
+    const accepted = await fetch(`${url}/runs/${run.runId}/approvals/named_gate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "revise", message: "Add rollback criteria" }),
+    });
+    expect(accepted.status).toBe(204);
+    expect(readControl()[0]).toMatchObject({
+      t: "approval",
+      decision: {
+        behavior: "deny",
+        action: "revise",
+        message: "Add rollback criteria",
+      },
+    });
+  });
+
   it("rejects a bad approval behavior", async () => {
     const res = await fetch(`${url}/runs/${run.runId}/approvals/appr_1`, {
       method: "POST",
