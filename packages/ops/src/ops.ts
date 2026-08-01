@@ -34,7 +34,7 @@ import {
 } from "@karowanorg/orc-core";
 import { MonitorServer, openInBrowser, portForHome, writeReport } from "@karowanorg/orc-ui";
 import { orcHome } from "@karowanorg/orc-core";
-import { GUIDE } from "./guide.js";
+import { GUIDE, PROGRAM_GUIDE } from "./guide.js";
 
 export interface OpContext {
   registry: Registry;
@@ -505,9 +505,11 @@ export const guide = defineOp({
   readOnly: true,
   input: z.object({
     probe: z.boolean().default(true).describe("append the live capability catalog (set false for the static doc only)"),
+    includeCli: z.boolean().default(true).describe("include standalone orc CLI operations"),
   }),
   async handler(input, ctx) {
-    if (!input.probe) return { guide: GUIDE };
+    const text = (input.includeCli === false ? PROGRAM_GUIDE : GUIDE) + renderExtensionGuides(ctx.registry);
+    if (!input.probe) return { guide: text };
     // Bake step-2 (capability discovery) into the guide response so a model
     // goes straight from `guide` to writing, with valid harness/model/effort
     // values in hand instead of guessing. Never let a slow or missing harness
@@ -517,7 +519,7 @@ export const guide = defineOp({
       capabilities.handler({ refresh: false }, ctx),
       15_000,
     ).catch(() => null);
-    return { guide: GUIDE + (caps ? renderCapabilitiesForGuide(caps) : "") };
+    return { guide: text + (caps ? renderCapabilitiesForGuide(caps, input.includeCli !== false) : "") };
   },
 });
 
@@ -537,8 +539,19 @@ interface GuideCaps {
   harnesses: Record<string, HarnessCapabilities & { detail?: string }>;
 }
 
+function renderExtensionGuides(registry: Registry): string {
+  const guides = [
+    ...new Set(
+      [...registry.extensions.values()]
+        .map((extension) => extension.guide?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  return guides.length > 0 ? `\n\n${guides.join("\n\n")}` : "";
+}
+
 /** Compact, model-readable rendering of the live catalog appended to the guide. */
-function renderCapabilitiesForGuide(caps: unknown): string {
+function renderCapabilitiesForGuide(caps: unknown, includeCliHint: boolean): string {
   const c = caps as GuideCaps;
   const lines: string[] = [
     "",
@@ -554,7 +567,7 @@ function renderCapabilitiesForGuide(caps: unknown): string {
       lines.push("", `- **${name}** — unavailable (${h?.detail ?? "not found"})`);
       continue;
     }
-    lines.push("", `- **${name}**${h.version ? ` v${h.version}` : ""}`);
+    lines.push("", `- **${name}**${h.version ? ` ${h.version}` : ""}`);
     for (const m of h.models ?? []) {
       const efforts =
         m.reasoningEfforts.length > 0
@@ -564,7 +577,7 @@ function renderCapabilitiesForGuide(caps: unknown): string {
     }
     if (h.approvalModes?.length) lines.push(`    - approval modes: ${h.approvalModes.join(", ")}`);
   }
-  lines.push("", "Re-run `orc capabilities` any time.");
+  if (includeCliHint) lines.push("", "Re-run `orc capabilities` any time.");
   return lines.join("\n");
 }
 

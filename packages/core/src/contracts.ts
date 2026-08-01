@@ -194,6 +194,8 @@ export interface Harness {
 // ---------------------------------------------------------------------------
 export interface ExtensionLeaf {
   name: string; // program-visible as ext.<name>(payload)
+  /** Optional model-readable usage section appended verbatim by `orc guide`. */
+  guide?: string;
   inputSchema?: Json; // JSON Schema validated at dispatch
   readOnly: boolean;
   execute(payload: Json, ctx: ExtensionContext): Promise<Json>;

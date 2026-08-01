@@ -13,6 +13,7 @@ import {
   resume as resumeOp,
   cancel as cancelOp,
   capabilities as capabilitiesOp,
+  guide as guideOp,
   respondApproval as respondOp,
   listApprovals as listApprovalsOp,
   validate as validateOp,
@@ -142,6 +143,12 @@ export class Orc {
   async capabilities(): Promise<unknown> {
     const ctx = await this.ctx();
     return capabilitiesOp.handler({ refresh: false }, ctx);
+  }
+
+  async guide(options: { probe?: boolean; includeCli?: boolean } = {}): Promise<string> {
+    const ctx = await this.ctx();
+    const result = await guideOp.handler(guideOp.input.parse(options), ctx);
+    return result.guide;
   }
 
   run(runId: string): OrcRun {

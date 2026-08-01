@@ -3,11 +3,10 @@
  *  - CLI:  `orc guide`
  *  - MCP:  the `orc_guide` tool
  */
-export const GUIDE = `# orc — how to write and run a program
+export const PROGRAM_GUIDE = `# orc — how to write and run a program
 
 orc runs a "program": a script that fans out AI-agent subtasks ("leaves") and
-records each one, so a run is reproducible, resumable, and observable. You write
-a program, launch it, then watch it and collect the result.
+records each one, so a run is reproducible, resumable, and observable.
 
 ## 1. Write a program
 
@@ -54,11 +53,8 @@ its prompt (plus the shared \`--brief\`).
       cwd              working directory for this leaf (defaults to the run's)
       idleTimeout      ms with no output before the leaf is killed (false = off)
       phase            group this call under a phase label
-    To see valid \`harness\`, \`model\`, and \`reasoningEffort\` values for your
-    machine, run \`orc capabilities\` (or \`orc capabilities --json\`) — it lists
-    each installed harness with its available models and reasoning levels.
-    Omit any of them to use the default; an unknown value is rejected up front
-    by \`orc validate\`.
+    The live catalog at the end of this guide lists valid \`harness\`, \`model\`,
+    and \`reasoningEffort\` values. Omit any of them to use the default.
 
 - parallel(specs[]) => Promise<outcomes[]>
     Run several agents at once from an array of option objects (each with a
@@ -96,13 +92,14 @@ loops for control flow.
 ## Writing files
 
 By default leaves are read-only. To let a leaf directly modify files or run
-mutating commands, set \`readOnly: false\` and launch the run with
-\`--allow-writes\`. Configured hooks and MCP tools are not disabled for read-only
+mutating commands, set \`readOnly: false\`; the host must also grant the run
+write access. Configured hooks and MCP tools are not disabled for read-only
 leaves; their side effects are outside this guarantee. A write leaf runs with
-whatever permissions your own agent has; add \`--sandbox\` to confine its writes
-to the working directory. If a run stops on a write leaf, \`orc resume\` picks it
-back up (it re-checks the working-tree state first, never blindly redoing work).
+the permissions and filesystem confinement selected by the host. Resuming a
+stopped write leaf re-checks working-tree state before continuing.
+`;
 
+export const ORC_CLI_GUIDE = `
 ## 2. Validate and launch
 
     orc validate --program-path ./my.orc.ts       # compile + preview, no run
@@ -142,3 +139,5 @@ tool. Answer it from anywhere:
 Every command supports \`--json\`. Run state lives in \`$ORC_HOME\` (default
 \`~/.orc\`). Real runs need \`claude\` and/or \`codex\` installed and logged in.
 `;
+
+export const GUIDE = PROGRAM_GUIDE + ORC_CLI_GUIDE;

@@ -11,7 +11,7 @@ import type {
   Registry,
 } from "@karowanorg/orc-core";
 import { LocalExecutor } from "@karowanorg/orc-executors";
-import { guide, GUIDE, type OpContext } from "@karowanorg/orc-ops";
+import { guide, GUIDE, PROGRAM_GUIDE, type OpContext } from "@karowanorg/orc-ops";
 
 const fakeHarness: Harness = {
   name: "fake",
@@ -57,6 +57,43 @@ describe("guide (baked-in capabilities)", () => {
     const { guide: text } = await guide.handler({ probe: false }, ctx);
     expect(text).toBe(GUIDE);
     expect(text).not.toContain("## Available on this machine");
+  });
+
+  it("omits standalone Orc commands for an embedded host", async () => {
+    const { guide: text } = await guide.handler({ probe: true, includeCli: false }, ctx);
+
+    expect(text.startsWith(PROGRAM_GUIDE)).toBe(true);
+    expect(text).not.toContain("orc launch");
+    expect(text).not.toContain("orc capabilities");
+    expect(text).not.toContain("## 2. Validate and launch");
+    expect(text).toContain("## Available on this machine");
+  });
+
+  it("appends and deduplicates registered extension guides", async () => {
+    const extensionGuide = "## Example extensions\n\nUse `ext.example_document(...)`.";
+    const extensions: Registry["extensions"] = new Map([
+      ["example_document", {
+        name: "example_document",
+        guide: extensionGuide,
+        readOnly: false,
+        async execute() { return null; },
+      }],
+      ["example_gate", {
+        name: "example_gate",
+        guide: extensionGuide,
+        readOnly: true,
+        async execute() { return null; },
+      }],
+    ]);
+
+    const { guide: text } = await guide.handler(
+      { probe: false },
+      { registry: { ...registry, extensions } },
+    );
+
+    expect(text.startsWith(GUIDE)).toBe(true);
+    expect(text.match(/## Example extensions/g)).toHaveLength(1);
+    expect(text).toContain("Use `ext.example_document(...)`.");
   });
 
   it("degrades to the static doc when a harness probe throws", async () => {
