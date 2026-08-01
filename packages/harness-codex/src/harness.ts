@@ -69,6 +69,10 @@ export interface CodexHarnessOptions {
 // --- wire result fragments (loosely typed; only fields we consume) ---------
 interface ThreadStartResult {
   thread?: { id?: string };
+  model?: string;
+  modelProvider?: string;
+  reasoningEffort?: string | null;
+  serviceTier?: string | null;
 }
 interface TurnStartResult {
   turn?: { id?: string };
@@ -301,13 +305,16 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           ]
         : undefined;
 
-    // Announce the model/effort actually being requested (codex uses its
-    // configured default when req.model is unset).
-    queue.push({ kind: "model", model: req.model ?? "(codex default)", reasoningEffort: req.reasoningEffort });
-
     const proc: Proc = ctx.executor.spawn(appServerCommand, { cwd: req.cwd });
     let turnId: string | undefined;
     let threadId: string | undefined;
+    let resolvedModel = req.model;
+    let resolvedServiceTier: string | null | undefined;
+    let accumulatedInputTokens = 0;
+    let accumulatedOutputTokens = 0;
+    let accumulatedCostUsd = 0;
+    let costEstimateKnown = true;
+    let previousUsageTotal: string | undefined;
     let lastErrorMessage: string | undefined;
     const itemsById = new Map<string, ThreadItemWire>();
     const messageBuffers = new Map<string, string>();
@@ -440,23 +447,59 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           break;
         }
         case "thread/tokenUsage/updated": {
-          const usage = asRecord(asRecord(params.tokenUsage).total);
+          const tokenUsage = asRecord(params.tokenUsage);
+          const total = asRecord(tokenUsage.total);
+          const totalFingerprint = JSON.stringify(
+            [
+              "inputTokens",
+              "cachedInputTokens",
+              "cacheWriteInputTokens",
+              "outputTokens",
+              "reasoningOutputTokens",
+              "totalTokens",
+            ].map((field) => (typeof total[field] === "number" ? total[field] : null)),
+          );
+          if (totalFingerprint === previousUsageTotal) break;
+          previousUsageTotal = totalFingerprint;
+
+          const usage = asRecord(tokenUsage.last);
           const inputTokens = typeof usage.inputTokens === "number" ? usage.inputTokens : undefined;
           const outputTokens = typeof usage.outputTokens === "number" ? usage.outputTokens : undefined;
           const cachedInputTokens =
             typeof usage.cachedInputTokens === "number" ? usage.cachedInputTokens : undefined;
-          // codex reports tokens but no dollars — estimate from the rate table.
-          // Fall back to the gpt-5.6 family key when the program didn't pin a model.
-          const costUsd = estimateCostUsd(costRates, req.model ?? "gpt-5.6", {
-            inputTokens,
-            cachedInputTokens,
-            outputTokens,
-          });
+          const cacheWriteInputTokens =
+            typeof usage.cacheWriteInputTokens === "number" ? usage.cacheWriteInputTokens : undefined;
+          const hasRequestUsage =
+            inputTokens !== undefined ||
+            outputTokens !== undefined ||
+            cachedInputTokens !== undefined ||
+            cacheWriteInputTokens !== undefined;
+          if (!hasRequestUsage) {
+            costEstimateKnown = false;
+            break;
+          }
+
+          accumulatedInputTokens += inputTokens ?? 0;
+          accumulatedOutputTokens += outputTokens ?? 0;
+          const requestCostUsd = estimateCostUsd(
+            costRates,
+            resolvedModel,
+            {
+              inputTokens,
+              cachedInputTokens,
+              cacheWriteInputTokens,
+              outputTokens,
+            },
+            resolvedServiceTier,
+          );
+          if (requestCostUsd === undefined) costEstimateKnown = false;
+          else if (costEstimateKnown) accumulatedCostUsd += requestCostUsd;
+
           queue.push({
             kind: "usage",
-            tokensIn: inputTokens,
-            tokensOut: outputTokens,
-            ...(costUsd !== undefined ? { costUsd, costEstimated: true } : {}),
+            tokensIn: accumulatedInputTokens,
+            tokensOut: accumulatedOutputTokens,
+            ...(costEstimateKnown ? { costUsd: accumulatedCostUsd, costEstimated: true } : {}),
           });
           break;
         }
@@ -598,8 +641,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
 
       const developerInstructions = req.system.trim() || undefined;
 
+      let threadResult: ThreadStartResult;
       if (req.sessionId) {
-        const resumed = await rpc.request<ThreadStartResult>("thread/resume", {
+        threadResult = await rpc.request<ThreadStartResult>("thread/resume", {
           threadId: req.sessionId,
           cwd: req.cwd,
           ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
@@ -610,9 +654,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             : {}),
           ...(developerInstructions ? { developerInstructions } : {}),
         });
-        threadId = resumed.thread?.id ?? req.sessionId;
+        threadId = threadResult.thread?.id ?? req.sessionId;
       } else {
-        const started = await rpc.request<ThreadStartResult>("thread/start", {
+        threadResult = await rpc.request<ThreadStartResult>("thread/start", {
           cwd: req.cwd,
           ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
@@ -622,9 +666,16 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             : {}),
           ...(developerInstructions ? { developerInstructions } : {}),
         });
-        threadId = started.thread?.id;
+        threadId = threadResult.thread?.id;
         if (!threadId) throw new Error("thread/start returned no thread id");
       }
+      resolvedModel = req.model ?? threadResult.model;
+      resolvedServiceTier = threadResult.serviceTier;
+      queue.push({
+        kind: "model",
+        model: resolvedModel,
+        reasoningEffort: req.reasoningEffort ?? threadResult.reasoningEffort ?? undefined,
+      });
       queue.push({ kind: "session", sessionId: threadId });
 
       const turnStarted = await rpc.request<TurnStartResult>("turn/start", {

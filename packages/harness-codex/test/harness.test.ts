@@ -133,6 +133,7 @@ describe("codexHarness happy path", () => {
     const usage = events.find((e) => e.kind === "usage")!;
     expect(usage.kind === "usage" && usage.tokensIn).toBe(100);
     expect(usage.kind === "usage" && usage.tokensOut).toBe(20);
+    expect(usage.kind === "usage" && usage.costUsd).toBeCloseTo(0.0010225, 10);
 
     const result = events.at(-1)!;
     expect(result.kind).toBe("result");
@@ -157,6 +158,59 @@ describe("codexHarness happy path", () => {
     const outputSchema = turnStart.outputSchema as Record<string, unknown>;
     expect(outputSchema.additionalProperties).toBe(false); // normalized
     expect(Object.keys(outputSchema.properties as object)).toEqual(["n", "ok"]); // sorted
+  });
+
+  it("prices the default model resolved by thread/start", async () => {
+    const { events } = await runScenario("happy");
+    const model = events.find((event) => event.kind === "model");
+    expect(model).toEqual({ kind: "model", model: "gpt-5.6-sol", reasoningEffort: "medium" });
+    const usage = events.find((event) => event.kind === "usage");
+    expect(usage?.kind === "usage" && usage.costUsd).toBeCloseTo(0.0010225, 10);
+  });
+
+  it("prices an explicit Bedrock model instead of the thread default", async () => {
+    const { events } = await runScenario("happy", { model: "openai.gpt-5.6-sol" });
+    const model = events.find((event) => event.kind === "model");
+    expect(model?.kind === "model" && model.model).toBe("openai.gpt-5.6-sol");
+    const usage = events.find((event) => event.kind === "usage");
+    expect(usage?.kind === "usage" && usage.costUsd).toBeCloseTo(0.00112475, 10);
+  });
+
+  it("deduplicates identical usage and accumulates distinct requests", async () => {
+    const { events } = await runScenario("usage-multiple");
+    const usages = events.filter(
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+    );
+    expect(usages).toHaveLength(2);
+    expect(usages[0]).toMatchObject({ tokensIn: 100, tokensOut: 20 });
+    expect(usages[1]).toMatchObject({ tokensIn: 250, tokensOut: 50 });
+    expect(usages[1].costUsd).toBeCloseTo(0.00255, 10);
+  });
+
+  it("prices only request-local usage when resuming a thread", async () => {
+    const { events } = await runScenario("resume-usage", { sessionId: "thread-old-7" });
+    const usage = events.find(
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+    );
+    expect(usage).toMatchObject({ tokensIn: 100, tokensOut: 20 });
+    expect(usage?.costUsd).toBeCloseTo(0.0010225, 10);
+  });
+
+  it("omits cost when the resolved model has no exact price", async () => {
+    const { events } = await runScenario("unknown-model");
+    const usage = events.find(
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+    );
+    expect(usage).toMatchObject({ tokensIn: 100, tokensOut: 20 });
+    expect(usage && "costUsd" in usage).toBe(false);
+  });
+
+  it("applies the resolved Fast/Priority service tier", async () => {
+    const { events } = await runScenario("fast-tier");
+    const usage = events.find(
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+    );
+    expect(usage?.costUsd).toBeCloseTo(0.000818, 10);
   });
 
   it("filesystem policy is orthogonal to approval mode", async () => {
