@@ -7,12 +7,229 @@ import type { Readable, Writable } from "node:stream";
 // ---------------------------------------------------------------------------
 // JSON
 // ---------------------------------------------------------------------------
-export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
+export type Json =
+  null | boolean | number | string | Json[] | { [k: string]: Json };
+
+// ---------------------------------------------------------------------------
+// Program presentation metadata
+// ---------------------------------------------------------------------------
+export type ProgramGraphNodeKind = "phase" | "gate" | "terminal";
+
+export interface ProgramGraphNode {
+  /** Stable key reconciled with phase(id, fn), unless this is a terminal. */
+  id: string;
+  title: string;
+  kind?: ProgramGraphNodeKind;
+  /** Terminal nodes currently represent successful durable completion. */
+  terminalState?: "completed";
+}
+
+export interface ProgramGraphEdge {
+  from: string;
+  to: string;
+  /** Back edges are rendered as loops and excluded from forward layout. */
+  kind?: "loop";
+  label?: string;
+}
+
+export interface ProgramGraph {
+  nodes: ProgramGraphNode[];
+  edges: ProgramGraphEdge[];
+}
+
+export type RunGraphNodeState =
+  "pending" | "running" | "waiting" | "completed" | "failed" | "skipped";
+
+export interface RunGraphNode extends ProgramGraphNode {
+  state: RunGraphNodeState;
+  /** Number of distinct runtime phase invocations observed for this node. */
+  visits: number;
+  /** Runtime phase absent from the authored graph. */
+  unplanned?: boolean;
+}
+
+export interface RunGraphEdge extends ProgramGraphEdge {
+  /** Number of durable runtime transitions observed across this edge. */
+  traversals: number;
+}
+
+export interface RunGraph {
+  nodes: RunGraphNode[];
+  edges: RunGraphEdge[];
+}
+
+export type RunCostBasis = "exact" | "estimated" | "mixed";
+
+export interface RunUsage {
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number;
+  costBasis?: RunCostBasis;
+  /** At least one included attempt has usage that cannot be priced. */
+  costUnavailable?: boolean;
+}
+
+export interface RunTextPreview {
+  text: string;
+  format: "text" | "json";
+  truncated?: boolean;
+}
+
+export interface RunToolCallDetail {
+  id: string;
+  name: string;
+  status: ToolCallTrace["status"];
+  startMs?: number;
+  endMs?: number;
+  input?: RunTextPreview;
+  result?: RunTextPreview;
+}
+
+export interface RunArtifactDetail {
+  id: string;
+  seq: number;
+  attempt: number;
+  source: "input" | "live" | "output";
+  label: string;
+  path: string;
+  sha256?: string;
+  mediaType: string;
+  content?: string;
+  contentTruncated?: boolean;
+  /** Opaque owner-specific reference for retrieving the complete content. */
+  contentRef?: string;
+  contentSizeBytes?: number;
+}
+
+export interface RunLogDetail {
+  firstAtMs: number;
+  lastAtMs: number;
+  message: string;
+  occurrences: number;
+}
+
+export interface RunApprovalDetail {
+  id: string;
+  seq: number;
+  toolName: string;
+  requestedAtMs: number;
+  resolvedAtMs?: number;
+  status: "pending" | "allowed" | "denied";
+  action?: string;
+  actionLabel?: string;
+  message?: string;
+  title?: string;
+  summary?: string;
+}
+
+export interface RunAttemptDetail {
+  seq: number;
+  attempt: number;
+  id?: string;
+  kind: string;
+  status: LeafStatus["status"];
+  readOnly: boolean;
+  harness?: string;
+  model?: string;
+  reasoningEffort?: string;
+  cwd?: string;
+  sessionId?: string;
+  startMs?: number;
+  endMs?: number;
+  reoriented?: boolean;
+  title?: string;
+  summary?: string;
+  fields?: UiPresentation["fields"];
+  usage: RunUsage;
+  prompt?: RunTextPreview;
+  output?: RunTextPreview;
+  error?: string;
+  toolCallCount: number;
+  toolCalls: RunToolCallDetail[];
+  toolCallsOmitted?: number;
+}
+
+export interface RunStageMetrics extends RunUsage {
+  callCount: number;
+  attemptCount: number;
+  failedAttemptCount: number;
+  toolCallCount: number;
+  artifactCount: number;
+  logCount: number;
+  approvalCount: number;
+  startedAtMs?: number;
+  endedAtMs?: number;
+}
+
+export interface RunStageDetail {
+  /** Absent only for calls authored outside a named phase. */
+  phase?: string;
+  metrics: RunStageMetrics;
+  attempts: RunAttemptDetail[];
+  attemptsOmitted?: number;
+  artifacts: RunArtifactDetail[];
+  artifactsOmitted?: number;
+  logs: RunLogDetail[];
+  logsOmitted?: number;
+  approvals: RunApprovalDetail[];
+  approvalsOmitted?: number;
+}
+
+export interface RunDetail {
+  metrics: RunStageMetrics;
+  stages: RunStageDetail[];
+  runLog: RunLogDetail[];
+  runLogOmitted?: number;
+}
+
+/**
+ * Display-only program metadata. It never schedules work or constrains which
+ * phases an executable program may enter.
+ */
+export interface ProgramMeta {
+  graph: ProgramGraph;
+}
 
 // ---------------------------------------------------------------------------
 // Approval model (generic — each harness maps these to its native controls)
 // ---------------------------------------------------------------------------
 export type ApprovalMode = "manual" | "accept-edits" | "auto" | "bypass";
+
+export interface UiPresentation {
+  title?: string;
+  summary?: string;
+  fields?: Array<{
+    label: string;
+    value: string;
+    kind?: "text" | "code" | "path" | "url";
+  }>;
+  documents?: Array<{
+    label: string;
+    path: string;
+    sha256?: string;
+    mediaType?: string;
+    content?: string;
+  }>;
+  /** Latest badge with a given key is also shown in the run header. */
+  badges?: Array<{
+    key: string;
+    label: string;
+    value: string;
+    href?: string;
+    tone?: "neutral" | "success" | "warning" | "danger";
+  }>;
+}
+
+export interface ApprovalAction {
+  id: string;
+  label: string;
+  behavior: "allow" | "deny";
+  tone?: "primary" | "secondary" | "danger";
+  message?: {
+    label: string;
+    required?: boolean;
+  };
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -21,10 +238,13 @@ export interface ApprovalRequest {
   toolName: string;
   input: Json;
   requestedAtMs: number;
+  presentation?: UiPresentation;
+  actions?: ApprovalAction[];
 }
 
 export interface ApprovalDecision {
   behavior: "allow" | "deny";
+  action?: string;
   message?: string; // reason shown to the model on deny
 }
 
@@ -114,10 +334,32 @@ export interface LeafRequest {
 }
 
 export type HarnessEvent =
-  | { kind: "tool-call-open"; id: string; name: string; input?: Json; atMs: number }
-  | { kind: "tool-call-close"; id: string; status: "ok" | "error"; result?: Json; atMs: number }
+  | {
+      kind: "tool-call-open";
+      id: string;
+      name: string;
+      input?: Json;
+      atMs: number;
+    }
+  | {
+      kind: "tool-call-close";
+      id: string;
+      status: "ok" | "error";
+      result?: Json;
+      atMs: number;
+    }
   | { kind: "text"; delta: string; atMs: number }
-  | { kind: "usage"; tokensIn?: number; tokensOut?: number; costUsd?: number; costEstimated?: boolean }
+  | {
+      kind: "usage";
+      tokensIn?: number;
+      tokensOut?: number;
+      /**
+       * Cumulative cost for this attempt. `null` explicitly invalidates an
+       * earlier estimate; `undefined` means this event has no cost update.
+       */
+      costUsd?: number | null;
+      costEstimated?: boolean;
+    }
   | { kind: "model"; model?: string; reasoningEffort?: string }
   | { kind: "session"; sessionId: string }
   | { kind: "denied"; toolName: string; reason: string; atMs: number }
@@ -126,9 +368,16 @@ export type HarnessEvent =
 
 export interface HarnessContext {
   executor: Executor;
-  requestApproval(req: Omit<ApprovalRequest, "id" | "requestedAtMs">): Promise<ApprovalDecision>;
+  requestApproval(
+    req: Omit<ApprovalRequest, "id" | "requestedAtMs">,
+  ): Promise<ApprovalDecision>;
   signal: AbortSignal;
   log(message: string): void;
+}
+
+export interface ExtensionContext extends HarnessContext {
+  /** Replace the trace-only live presentation for this extension leaf. */
+  present(presentation: UiPresentation): void;
 }
 
 export interface Harness {
@@ -150,9 +399,21 @@ export interface Harness {
 // ---------------------------------------------------------------------------
 export interface ExtensionLeaf {
   name: string; // program-visible as ext.<name>(payload)
+  /** Optional model-readable usage section appended verbatim by `orc guide`. */
+  guide?: string;
   inputSchema?: Json; // JSON Schema validated at dispatch
   readOnly: boolean;
-  execute(payload: Json, ctx: HarnessContext): Promise<Json>;
+  /** Extension-specific output-idle watchdog in ms; false disables it. */
+  idleTimeout?: number | false;
+  execute(payload: Json, ctx: ExtensionContext): Promise<Json>;
+  /**
+   * Optional trace-only projection for the generic Orc UI. Projection errors
+   * never affect extension execution, and raw payloads are not persisted.
+   */
+  present?: {
+    input?(payload: Json): UiPresentation | undefined;
+    output?(payload: Json, result: Json): UiPresentation | undefined;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,8 +478,9 @@ export interface CostRecord {
   t: "cost";
   seq: number;
   attempt: number;
-  costUsd: number;
-  costEstimated: boolean;
+  /** `null` durably invalidates an earlier cumulative estimate. */
+  costUsd: number | null;
+  costEstimated?: boolean;
   atMs: number;
 }
 
@@ -290,9 +552,15 @@ export interface LeafTraceRecord {
   toolCalls?: ToolCallTrace[];
   tokensIn?: number;
   tokensOut?: number;
-  costUsd?: number;
+  /** `null` means usage was observed but cannot be priced completely. */
+  costUsd?: number | null;
   costEstimated?: boolean; // true = derived from a rate table (codex), not billed (claude)
   reoriented?: boolean;
+  presentation?: {
+    input?: UiPresentation;
+    live?: UiPresentation;
+    output?: UiPresentation;
+  };
 }
 
 export interface RunEventRecord {
@@ -300,10 +568,27 @@ export interface RunEventRecord {
   atMs: number;
   event:
     | { kind: "log"; message: string }
-    | { kind: "phase"; name: string }
+    | {
+        kind: "phase";
+        name: string;
+        state?: "started" | "completed" | "failed";
+        /** Deterministic invocation identity; absent on legacy traces. */
+        scope?: number;
+      }
     | { kind: "approval-requested"; approval: ApprovalRequest }
-    | { kind: "approval-resolved"; approvalId: string; decision: ApprovalDecision; by: string }
+    | {
+        kind: "approval-resolved";
+        approvalId: string;
+        decision: ApprovalDecision;
+        by: string;
+      }
     | { kind: "denied"; seq: number; toolName: string; reason: string };
+}
+
+export interface ProgramMetaTraceRecord {
+  t: "program-meta";
+  atMs: number;
+  meta: ProgramMeta;
 }
 
 /**
@@ -318,7 +603,8 @@ export interface HarnessLogRecord {
   message: string;
 }
 
-export type TraceRecord = LeafTraceRecord | RunEventRecord | HarnessLogRecord;
+export type TraceRecord =
+  LeafTraceRecord | RunEventRecord | HarnessLogRecord | ProgramMetaTraceRecord;
 
 // ---------------------------------------------------------------------------
 // Run manifest + status projection
@@ -364,6 +650,10 @@ export interface LeafStatus {
 export interface RunStatus {
   runId: string;
   state: RunState;
+  /** Durable projection of authored metadata plus persisted runtime traces. */
+  graph?: RunGraph;
+  /** Bounded durable execution detail for native clients. */
+  detail?: RunDetail;
   totalCalls: number;
   ok: number;
   failed: number;
@@ -383,7 +673,13 @@ export interface RunStatus {
 // ---------------------------------------------------------------------------
 export type ControlMessage =
   | { t: "cancel"; atMs: number }
-  | { t: "approval"; approvalId: string; decision: ApprovalDecision; by: string; atMs: number };
+  | {
+      t: "approval";
+      approvalId: string;
+      decision: ApprovalDecision;
+      by: string;
+      atMs: number;
+    };
 
 // ---------------------------------------------------------------------------
 // Policy caps

@@ -11,6 +11,11 @@
  *
  * Scenarios:
  *   happy         command item + structured agent message + usage + completed
+ *   usage-multiple duplicate usage plus a second distinct request
+ *   usage-unavailable priced request followed by usage without local token data
+ *   resume-usage  resumed thread with historical totals and a small last request
+ *   unknown-model thread resolves to a model without a pricing profile
+ *   fast-tier     thread resolves to Terra on the Priority service tier
  *   optional-null strict-schema null placeholders in nested optional fields
  *   approval      server requests item/commandExecution/requestApproval
  *   legacy-approval  server requests execCommandApproval (old family)
@@ -71,15 +76,25 @@ function agentMessage(text, { deltas = true } = {}) {
   }
   completeItem({ ...it, text });
 }
-function usage() {
+function emitUsage(last, total = last) {
   notify("thread/tokenUsage/updated", {
     threadId: THREAD_ID,
     turnId: TURN_ID,
     tokenUsage: {
-      total: { totalTokens: 120, inputTokens: 100, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 0 },
-      last: { totalTokens: 120, inputTokens: 100, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 0 },
+      total,
+      last,
       modelContextWindow: 258400,
     },
+  });
+}
+function usage() {
+  emitUsage({
+    totalTokens: 120,
+    inputTokens: 100,
+    cachedInputTokens: 20,
+    cacheWriteInputTokens: 10,
+    outputTokens: 20,
+    reasoningOutputTokens: 0,
   });
 }
 function turnCompleted(status, error = null) {
@@ -91,7 +106,12 @@ function turnCompleted(status, error = null) {
 
 async function driveTurn() {
   switch (scenario) {
-    case "happy": {
+    case "happy":
+    case "usage-multiple":
+    case "usage-unavailable":
+    case "resume-usage":
+    case "unknown-model":
+    case "fast-tier": {
       const cmd = item("commandExecution", "exec-1", {
         command: "/bin/zsh -lc 'echo hi'",
         cwd: threadCwd,
@@ -101,7 +121,73 @@ async function driveTurn() {
       emitItem(cmd);
       completeItem({ ...cmd, status: "completed", exitCode: 0 });
       agentMessage('{"ok":true,"n":2}');
-      usage();
+      if (scenario === "usage-multiple") {
+        const first = {
+          totalTokens: 120,
+          inputTokens: 100,
+          cachedInputTokens: 20,
+          cacheWriteInputTokens: 10,
+          outputTokens: 20,
+          reasoningOutputTokens: 0,
+        };
+        emitUsage(first);
+        emitUsage(first);
+        emitUsage(
+          {
+            totalTokens: 180,
+            inputTokens: 150,
+            cachedInputTokens: 30,
+            cacheWriteInputTokens: 10,
+            outputTokens: 30,
+            reasoningOutputTokens: 0,
+          },
+          {
+            totalTokens: 300,
+            inputTokens: 250,
+            cachedInputTokens: 50,
+            cacheWriteInputTokens: 20,
+            outputTokens: 50,
+            reasoningOutputTokens: 0,
+          },
+        );
+      } else if (scenario === "usage-unavailable") {
+        usage();
+        emitUsage(
+          {
+            totalTokens: 1,
+            reasoningOutputTokens: 1,
+          },
+          {
+            totalTokens: 121,
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 10,
+            outputTokens: 20,
+            reasoningOutputTokens: 1,
+          },
+        );
+      } else if (scenario === "resume-usage") {
+        emitUsage(
+          {
+            totalTokens: 120,
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 10,
+            outputTokens: 20,
+            reasoningOutputTokens: 0,
+          },
+          {
+            totalTokens: 1_000_120,
+            inputTokens: 900_100,
+            cachedInputTokens: 700_020,
+            cacheWriteInputTokens: 200_010,
+            outputTokens: 100_020,
+            reasoningOutputTokens: 10_000,
+          },
+        );
+      } else {
+        usage();
+      }
       turnCompleted("completed");
       break;
     }
@@ -279,13 +365,13 @@ function handle(msg) {
       break;
     case "thread/start":
       threadCwd = msg.params?.cwd ?? threadCwd;
-      send({ id: msg.id, result: { thread: { id: THREAD_ID }, model: "gpt-5.6-sol", modelProvider: "openai" } });
+      send({ id: msg.id, result: { thread: { id: THREAD_ID }, ...threadSettings() } });
       notify("thread/started", { thread: { id: THREAD_ID } });
       break;
     case "thread/resume":
       threadCwd = msg.params?.cwd ?? threadCwd;
       THREAD_ID = msg.params?.threadId ?? THREAD_ID;
-      send({ id: msg.id, result: { thread: { id: THREAD_ID }, model: "gpt-5.6-sol" } });
+      send({ id: msg.id, result: { thread: { id: THREAD_ID }, ...threadSettings() } });
       break;
     case "turn/start":
       send({ id: msg.id, result: { turn: { id: TURN_ID, items: [], status: "inProgress" } } });
@@ -300,4 +386,19 @@ function handle(msg) {
         send({ id: msg.id, error: { code: -32601, message: `unknown method ${msg.method}` } });
       }
   }
+}
+
+function threadSettings() {
+  if (scenario === "unknown-model") {
+    return { model: "gpt-future", modelProvider: "openai", serviceTier: "default" };
+  }
+  if (scenario === "fast-tier") {
+    return { model: "gpt-5.6-terra", modelProvider: "openai", serviceTier: "priority" };
+  }
+  return {
+    model: "gpt-5.6-sol",
+    modelProvider: "openai",
+    reasoningEffort: "medium",
+    serviceTier: "default",
+  };
 }

@@ -3,36 +3,76 @@
  *  - CLI:  `orc guide`
  *  - MCP:  the `orc_guide` tool
  */
-export const GUIDE = `# orc — how to write and run a program
+export const PROGRAM_GUIDE = `# orc — how to write and run a program
 
 orc runs a "program": a script that fans out AI-agent subtasks ("leaves") and
-records each one, so a run is reproducible, resumable, and observable. You write
-a program, launch it, then watch it and collect the result.
+records each one, so a run is reproducible, resumable, and observable.
 
 ## 1. Write a program
 
-A program is a \`.orc.ts\` file with a single default-exported async function.
-It receives an api object and returns the run's result:
+A program is a \`.orc.ts\` file with a default-exported async function. Optional
+\`meta.graph\` presentation metadata lets the monitor draw the complete graph
+before execution starts:
 
-    import type { Program } from "@karowanorg/orc-sdk/program"; // optional, type-only
+    import type { Program, ProgramMeta } from "@karowanorg/orc-sdk/program"; // optional, type-only
+
+    export const meta = {
+      graph: {
+        nodes: [
+          { id: "inventory", title: "Inventory" },
+          { id: "audit", title: "Audit modules" },
+          { id: "synthesis", title: "Synthesis" },
+          {
+            id: "done",
+            title: "Done",
+            kind: "terminal",
+            terminalState: "completed"
+          }
+        ],
+        edges: [
+          { from: "inventory", to: "audit" },
+          { from: "audit", to: "synthesis" },
+          { from: "synthesis", to: "done" }
+        ]
+      }
+    } satisfies ProgramMeta;
 
     const program: Program = async ({ agent, parallel, phase }) => {
-      const inventory = await agent("List the modules in this repo.", {
-        schema: { type: "object",
-                  properties: { modules: { type: "array", items: { type: "string" } } },
-                  required: ["modules"] },
-      });
+      const inventory = await phase("inventory", () =>
+        agent("List the modules in this repo.", {
+          schema: { type: "object",
+                    properties: { modules: { type: "array", items: { type: "string" } } },
+                    required: ["modules"] },
+        })
+      );
 
       // Ordinary async/await controls the flow. Awaiting a result before the
       // next call makes it a dependency; independent calls run concurrently.
-      const plans = await Promise.all((inventory.modules as string[]).map(async (m) => {
-        const findings = await agent(\`Audit module \${m}\`, { id: \`audit-\${m}\` });
-        return agent(\`Plan a fix for \${m}: \${JSON.stringify(findings)}\`, { id: \`plan-\${m}\` });
-      }));
+      const plans = await phase("audit", () =>
+        Promise.all((inventory.modules as string[]).map(async (m) => {
+          const findings = await agent(\`Audit module \${m}\`, { id: \`audit-\${m}\` });
+          return agent(\`Plan a fix for \${m}: \${JSON.stringify(findings)}\`, { id: \`plan-\${m}\` });
+        }))
+      );
 
       return phase("synthesis", () => agent(\`Merge these plans: \${JSON.stringify(plans)}\`, { id: "merge" }));
     };
     export default program;
+
+\`meta.graph\` is display-only: it never schedules or rejects execution. Node
+\`id\` values match stable \`phase(id, fn)\` names. Multiple outgoing edges
+represent branches. Mark every back edge explicitly:
+
+    { from: "review", to: "implementation",
+      kind: "loop", label: "Changes requested" }
+
+Repeated calls to the same phase update one graph node and increment its pass
+count. A graph may declare one successful terminal node with
+\`kind: "terminal"\` and \`terminalState: "completed"\`; it has exactly one
+incoming edge, no outgoing edges, and is completed from the durable run result
+rather than a fake phase. Runtime phases absent from the declaration still run
+and appear as unplanned nodes. Programs without \`meta\` retain the runtime-only
+phase view.
 
 ## The api
 
@@ -54,11 +94,8 @@ its prompt (plus the shared \`--brief\`).
       cwd              working directory for this leaf (defaults to the run's)
       idleTimeout      ms with no output before the leaf is killed (false = off)
       phase            group this call under a phase label
-    To see valid \`harness\`, \`model\`, and \`reasoningEffort\` values for your
-    machine, run \`orc capabilities\` (or \`orc capabilities --json\`) — it lists
-    each installed harness with its available models and reasoning levels.
-    Omit any of them to use the default; an unknown value is rejected up front
-    by \`orc validate\`.
+    The live catalog at the end of this guide lists valid \`harness\`, \`model\`,
+    and \`reasoningEffort\` values. Omit any of them to use the default.
 
 - parallel(specs[]) => Promise<outcomes[]>
     Run several agents at once from an array of option objects (each with a
@@ -96,13 +133,14 @@ loops for control flow.
 ## Writing files
 
 By default leaves are read-only. To let a leaf directly modify files or run
-mutating commands, set \`readOnly: false\` and launch the run with
-\`--allow-writes\`. Configured hooks and MCP tools are not disabled for read-only
+mutating commands, set \`readOnly: false\`; the host must also grant the run
+write access. Configured hooks and MCP tools are not disabled for read-only
 leaves; their side effects are outside this guarantee. A write leaf runs with
-whatever permissions your own agent has; add \`--sandbox\` to confine its writes
-to the working directory. If a run stops on a write leaf, \`orc resume\` picks it
-back up (it re-checks the working-tree state first, never blindly redoing work).
+the permissions and filesystem confinement selected by the host. Resuming a
+stopped write leaf re-checks working-tree state before continuing.
+`;
 
+export const ORC_CLI_GUIDE = `
 ## 2. Validate and launch
 
     orc validate --program-path ./my.orc.ts       # compile + preview, no run
@@ -142,3 +180,5 @@ tool. Answer it from anywhere:
 Every command supports \`--json\`. Run state lives in \`$ORC_HOME\` (default
 \`~/.orc\`). Real runs need \`claude\` and/or \`codex\` installed and logged in.
 `;
+
+export const GUIDE = PROGRAM_GUIDE + ORC_CLI_GUIDE;

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { prepareRun, superviseRun } from "../src/supervisor.js";
 import { acquireLock, appendControl, readJournal, readResult, readTraces, runPaths } from "../src/rundir.js";
 import { latestLeafTraces } from "../src/status.js";
+import { normalizeProgramMeta } from "../src/program-meta.js";
 import { validateAgainstSchema } from "../src/jsonschema.js";
 import { DEFAULT_POLICY, type Harness } from "../src/contracts.js";
 import { makeFakeHarness, makeRegistry } from "./helpers/fake.js";
@@ -39,6 +40,119 @@ describe("phase() concurrency correctness", () => {
     const { status } = await run("phase-nofn.orc.ts");
     expect(status.state).toBe("failed");
     expect(status.error).toMatch(/phase\(name, fn\) requires a function/);
+  });
+});
+
+describe("program graph metadata", () => {
+  it("normalizes one successful terminal and rejects terminal scheduling", () => {
+    expect(
+      normalizeProgramMeta({
+        graph: {
+          nodes: [
+            { id: "work", title: "Work" },
+            {
+              id: "done",
+              title: "Done",
+              kind: "terminal",
+              terminalState: "completed",
+            },
+          ],
+          edges: [{ from: "work", to: "done" }],
+        },
+      }),
+    ).toEqual({
+      graph: {
+        nodes: [
+          { id: "work", title: "Work" },
+          {
+            id: "done",
+            title: "Done",
+            kind: "terminal",
+            terminalState: "completed",
+          },
+        ],
+        edges: [{ from: "work", to: "done" }],
+      },
+    });
+
+    expect(() =>
+      normalizeProgramMeta({
+        graph: {
+          nodes: [
+            {
+              id: "done",
+              title: "Done",
+              kind: "terminal",
+              terminalState: "completed",
+            },
+            { id: "later", title: "Later" },
+          ],
+          edges: [{ from: "done", to: "later" }],
+        },
+      }),
+    ).toThrow('terminal node "done" cannot have outgoing edges');
+
+    expect(() =>
+      normalizeProgramMeta({
+        graph: {
+          nodes: [
+            { id: "first", title: "First" },
+            { id: "second", title: "Second" },
+            {
+              id: "done",
+              title: "Done",
+              kind: "terminal",
+              terminalState: "completed",
+            },
+          ],
+          edges: [
+            { from: "first", to: "done" },
+            { from: "second", to: "done" },
+          ],
+        },
+      }),
+    ).toThrow('terminal node "done" must have exactly one incoming edge');
+  });
+
+  it("records normalized metadata before scoped phase lifecycle events", async () => {
+    const { manifest, status } = await run("graph-meta.orc.ts");
+    expect(status.state).toBe("completed");
+    const traces = readTraces(manifest.runId);
+    const metadata = traces.find((trace) => trace.t === "program-meta");
+    expect(metadata).toMatchObject({
+      t: "program-meta",
+      meta: {
+        graph: {
+          nodes: [
+            { id: "plan", title: "Plan" },
+            { id: "review", title: "Review", kind: "gate" },
+          ],
+          edges: [
+            { from: "plan", to: "review" },
+            { from: "review", to: "plan", kind: "loop", label: "Changes requested" },
+          ],
+        },
+      },
+    });
+    const lifecycle = traces
+      .filter((trace) => trace.t === "event" && trace.event.kind === "phase")
+      .map((trace) => trace.t === "event" && trace.event.kind === "phase" ? trace.event : null);
+    expect(lifecycle).toEqual([
+      { kind: "phase", name: "plan", state: "started", scope: 1 },
+      { kind: "phase", name: "plan", state: "completed", scope: 1 },
+      { kind: "phase", name: "review", state: "started", scope: 2 },
+      { kind: "phase", name: "review", state: "completed", scope: 2 },
+    ]);
+    expect(traces.indexOf(metadata!)).toBeLessThan(
+      traces.findIndex((trace) => trace.t === "event" && trace.event.kind === "phase"),
+    );
+  });
+
+  it("fails before dispatch when a forward cycle is not declared as a loop", async () => {
+    const { status } = await run("graph-meta-invalid.orc.ts");
+    expect(status.state).toBe("failed");
+    expect(status.totalCalls).toBe(0);
+    expect(status.error).toContain('mark each back edge with kind: "loop"');
   });
 });
 
@@ -172,6 +286,39 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     expect(costs).toHaveLength(2);
   });
 
+  it("fails a budgeted run when observed usage becomes unpriceable", async () => {
+    const partiallyPriced: Harness = {
+      name: "partially-priced",
+      async discover() {
+        return {
+          available: true,
+          models: [],
+          approvalModes: ["auto"],
+          structuredOutput: true,
+          sessions: false,
+        };
+      },
+      async *invoke() {
+        yield { kind: "usage", costUsd: 0.1, costEstimated: true };
+        yield { kind: "usage", costUsd: null };
+        yield { kind: "result", output: { ok: true } };
+      },
+    };
+    const registry = makeRegistry(partiallyPriced);
+    const { manifest, status } = await run("budget-seq.orc.ts", registry, {
+      budgetUsd: 10,
+    });
+
+    expect(status.state).toBe("failed");
+    expect(status.error).toBe(
+      "budget cannot be enforced: cost estimate became unavailable",
+    );
+    expect(status.detail?.metrics).toMatchObject({ costUnavailable: true });
+    expect(status.detail?.metrics).not.toHaveProperty("costUsd");
+    const costs = readJournal(manifest.runId).filter((r) => r.t === "cost");
+    expect(costs.map((record) => record.costUsd)).toEqual([0.1, null]);
+  });
+
   it("routes harness stderr to per-leaf hlog records, never the event feed", async () => {
     const registry = makeRegistry(
       makeFakeHarness({
@@ -187,10 +334,15 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     const traces = readTraces(manifest.runId);
     const hlogs = traces.filter((t) => t.t === "hlog");
     expect(hlogs).toHaveLength(3);
-    expect(hlogs[0]).toMatchObject({ seq: 0, message: "ERROR failed to renew cache TTL: missing field `x`" });
+    expect(hlogs[0]).toMatchObject({
+      seq: 0,
+      message: "ERROR failed to renew cache TTL: missing field `x`",
+    });
     // The orchestration feed carries none of it.
     const feedLogs = traces.filter((t) => t.t === "event" && t.event.kind === "log");
-    expect(feedLogs.some((e) => JSON.stringify(e).includes("cache TTL"))).toBe(false);
+    expect(
+      feedLogs.some((e) => JSON.stringify(e).includes("cache TTL")),
+    ).toBe(false);
   });
 
   it("does NOT retry a deterministic schema error (invalid_json_schema)", async () => {
@@ -379,6 +531,38 @@ describe("supervisor shutdown", () => {
     expect(status.error).toMatch(/idle timeout/);
     const released = await acquireLock(runPaths(manifest.runId));
     await released.release();
+  });
+
+  it("honors an extension-specific disabled idle timeout", async () => {
+    const registry = makeRegistry(makeFakeHarness(), {
+      extensions: new Map([
+        [
+          "never",
+          {
+            name: "never",
+            readOnly: true,
+            idleTimeout: false,
+            execute: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 1_200));
+              return { completed: true };
+            },
+          },
+        ],
+      ]),
+    });
+    const manifest = await prepareRun(
+      {
+        programPath: FIX("never-ext.orc.ts"),
+        cwd: home,
+        brief: "b",
+        idleTimeout: 20,
+      },
+      registry,
+    );
+
+    const status = await superviseRun(manifest.runId, registry);
+
+    expect(status.state).toBe("completed");
   });
 });
 

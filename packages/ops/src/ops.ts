@@ -21,6 +21,7 @@ import {
   readManifest,
   readResult,
   readTraces,
+  resolveApprovalDecision,
   runPaths,
   sourceRequestsWrite,
   statusForRun,
@@ -33,7 +34,7 @@ import {
 } from "@karowanorg/orc-core";
 import { MonitorServer, openInBrowser, portForHome, writeReport } from "@karowanorg/orc-ui";
 import { orcHome } from "@karowanorg/orc-core";
-import { GUIDE } from "./guide.js";
+import { GUIDE, PROGRAM_GUIDE } from "./guide.js";
 
 export interface OpContext {
   registry: Registry;
@@ -168,6 +169,7 @@ export const validate = defineOp({
         },
         onLog: () => undefined,
         onPhase: () => undefined,
+        onProgramMeta: () => undefined,
       });
       const state = vm.state();
       if (state.state === "error") problems.push(`program failed before its first call: ${state.error}`);
@@ -425,18 +427,23 @@ export const respondApproval = defineOp({
   input: z.object({
     runId: RunId,
     approvalId: z.string(),
-    behavior: z.enum(["allow", "deny"]),
+    behavior: z.enum(["allow", "deny"]).optional(),
+    action: z.string().optional(),
     message: z.string().optional(),
   }),
   async handler(input) {
     requireRunningRun(input.runId);
-    if (!openApprovals(readTraces(input.runId)).some((approval) => approval.id === input.approvalId)) {
+    const approval = openApprovals(readTraces(input.runId)).find(
+      (candidate) => candidate.id === input.approvalId,
+    );
+    if (!approval) {
       throw new Error(`approval ${input.approvalId} is not pending for run ${input.runId}`);
     }
+    const decision = resolveApprovalDecision(approval, input);
     appendControl(input.runId, {
       t: "approval",
       approvalId: input.approvalId,
-      decision: { behavior: input.behavior, message: input.message },
+      decision,
       by: "operator",
       atMs: Date.now(),
     });
@@ -499,9 +506,11 @@ export const guide = defineOp({
   readOnly: true,
   input: z.object({
     probe: z.boolean().default(true).describe("append the live capability catalog (set false for the static doc only)"),
+    includeCli: z.boolean().default(true).describe("include standalone orc CLI operations"),
   }),
   async handler(input, ctx) {
-    if (!input.probe) return { guide: GUIDE };
+    const text = (input.includeCli === false ? PROGRAM_GUIDE : GUIDE) + renderExtensionGuides(ctx.registry);
+    if (!input.probe) return { guide: text };
     // Bake step-2 (capability discovery) into the guide response so a model
     // goes straight from `guide` to writing, with valid harness/model/effort
     // values in hand instead of guessing. Never let a slow or missing harness
@@ -511,7 +520,7 @@ export const guide = defineOp({
       capabilities.handler({ refresh: false }, ctx),
       15_000,
     ).catch(() => null);
-    return { guide: GUIDE + (caps ? renderCapabilitiesForGuide(caps) : "") };
+    return { guide: text + (caps ? renderCapabilitiesForGuide(caps, input.includeCli !== false) : "") };
   },
 });
 
@@ -531,8 +540,19 @@ interface GuideCaps {
   harnesses: Record<string, HarnessCapabilities & { detail?: string }>;
 }
 
+function renderExtensionGuides(registry: Registry): string {
+  const guides = [
+    ...new Set(
+      [...registry.extensions.values()]
+        .map((extension) => extension.guide?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  return guides.length > 0 ? `\n\n${guides.join("\n\n")}` : "";
+}
+
 /** Compact, model-readable rendering of the live catalog appended to the guide. */
-function renderCapabilitiesForGuide(caps: unknown): string {
+function renderCapabilitiesForGuide(caps: unknown, includeCliHint: boolean): string {
   const c = caps as GuideCaps;
   const lines: string[] = [
     "",
@@ -548,7 +568,7 @@ function renderCapabilitiesForGuide(caps: unknown): string {
       lines.push("", `- **${name}** — unavailable (${h?.detail ?? "not found"})`);
       continue;
     }
-    lines.push("", `- **${name}**${h.version ? ` v${h.version}` : ""}`);
+    lines.push("", `- **${name}**${h.version ? ` ${h.version}` : ""}`);
     for (const m of h.models ?? []) {
       const efforts =
         m.reasoningEfforts.length > 0
@@ -558,7 +578,7 @@ function renderCapabilitiesForGuide(caps: unknown): string {
     }
     if (h.approvalModes?.length) lines.push(`    - approval modes: ${h.approvalModes.join(", ")}`);
   }
-  lines.push("", "Re-run `orc capabilities` any time.");
+  if (includeCliHint) lines.push("", "Re-run `orc capabilities` any time.");
   return lines.join("\n");
 }
 

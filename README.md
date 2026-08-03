@@ -100,6 +100,13 @@ them natively (claude `permissionMode` incl. `dontAsk` for `auto`; codex
 (`orc approvals` / `orc respond`), MCP, and `run.watch()`. Default substrate is the
 user's own settings (claude `settingSources`, codex `$CODEX_HOME/config.toml`,
 normally `~/.codex/config.toml`).
+
+Extensions may attach named approval actions and declarative UI presentations.
+Named actions derive their allow/deny behavior from the approval request and
+may require an operator message. Presentations are bounded, trace-only data
+rendered by both the live monitor and static report; Orc never executes
+extension-supplied HTML or JavaScript.
+
 `readOnly` blocks built-in command and file-mutation tools but deliberately does
 not disable configured hooks and MCPs such as Computer Use; their side effects
 are outside that guarantee.
@@ -109,6 +116,11 @@ are outside that guarantee.
 Zero config runs claude + codex, discovered natively. An optional `orc.config.js`
 registers **custom** harnesses (package or NDJSON executable) and **runtime
 extensions** (`defineLeaf(...)` — journaled leaf kinds callable as `ext.name()`).
+An extension's optional `present.input` and `present.output` callbacks can
+project safe fields, document snapshots, and run-header badges without
+persisting its raw payload. Long-lived wait extensions can set
+`idleTimeout: false` (or an extension-specific millisecond limit) without
+changing the run-level watchdog used by agents and other leaves.
 There is deliberately no ambient plugin scanning.
 
 ## Development

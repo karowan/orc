@@ -3,6 +3,13 @@
  * `import type` (runtime imports are rejected by the sandbox).
  */
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
+export type {
+  ProgramGraph,
+  ProgramGraphEdge,
+  ProgramGraphNode,
+  ProgramGraphNodeKind,
+  ProgramMeta,
+} from "@karowanorg/orc-core";
 
 export interface AgentOptions {
   /** Optional trace label — makes waterfall rows read semantically. */

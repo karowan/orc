@@ -13,19 +13,37 @@ import {
   resume as resumeOp,
   cancel as cancelOp,
   capabilities as capabilitiesOp,
+  guide as guideOp,
   respondApproval as respondOp,
   listApprovals as listApprovalsOp,
   validate as validateOp,
   type OpContext,
 } from "@karowanorg/orc-ops";
-import { readTraces, openApprovals, statusForRun, type Json, type RunStatus } from "@karowanorg/orc-core";
+import {
+  readTraces,
+  openApprovals,
+  statusForRun,
+  type ApprovalAction,
+  type ApprovalResponse,
+  type Json,
+  type RunStatus,
+  type UiPresentation,
+} from "@karowanorg/orc-core";
 
 export type LaunchInput = z.input<typeof launchOp.input>;
 export type ValidateInput = z.input<typeof validateOp.input>;
 
 export type RunEvent =
   | { kind: "status"; status: RunStatus }
-  | { kind: "approval-requested"; approvalId: string; toolName: string; input: Json; respond(d: { behavior: "allow" | "deny"; message?: string }): Promise<void> }
+  | {
+      kind: "approval-requested";
+      approvalId: string;
+      toolName: string;
+      input: Json;
+      presentation?: UiPresentation;
+      actions?: ApprovalAction[];
+      respond(decision: ApprovalResponse): Promise<void>;
+    }
   | { kind: "done"; status: RunStatus };
 
 export class OrcRun {
@@ -58,9 +76,16 @@ export class OrcRun {
             approvalId: approval.id,
             toolName: approval.toolName,
             input: approval.input,
+            presentation: approval.presentation,
+            actions: approval.actions,
             respond: async (d) => {
+              const input = respondOp.input.parse({
+                ...d,
+                runId: this.runId,
+                approvalId: approval.id,
+              });
               await respondOp.handler(
-                { runId: this.runId, approvalId: approval.id, behavior: d.behavior, message: d.message },
+                input,
                 ctx,
               );
             },
@@ -125,6 +150,12 @@ export class Orc {
     return capabilitiesOp.handler({ refresh: false }, ctx);
   }
 
+  async guide(options: { probe?: boolean; includeCli?: boolean } = {}): Promise<string> {
+    const ctx = await this.ctx();
+    const result = await guideOp.handler(guideOp.input.parse(options), ctx);
+    return result.guide;
+  }
+
   run(runId: string): OrcRun {
     return new OrcRun(this, runId);
   }
@@ -137,5 +168,17 @@ export class Orc {
   async approvals(runId: string) {
     const ctx = await this.ctx();
     return listApprovalsOp.handler({ runId }, ctx);
+  }
+
+  async respond(
+    runId: string,
+    approvalId: string,
+    decision: ApprovalResponse,
+  ): Promise<void> {
+    const ctx = await this.ctx();
+    await respondOp.handler(
+      respondOp.input.parse({ ...decision, runId, approvalId }),
+      ctx,
+    );
   }
 }
