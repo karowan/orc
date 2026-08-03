@@ -11,7 +11,12 @@ import type {
   Registry,
 } from "@karowanorg/orc-core";
 import { LocalExecutor } from "@karowanorg/orc-executors";
-import { guide, GUIDE, PROGRAM_GUIDE, type OpContext } from "@karowanorg/orc-ops";
+import {
+  guide,
+  GUIDE,
+  PROGRAM_GUIDE,
+  type OpContext,
+} from "@karowanorg/orc-ops";
 
 const fakeHarness: Harness = {
   name: "fake",
@@ -60,9 +65,15 @@ describe("guide (baked-in capabilities)", () => {
   });
 
   it("omits standalone Orc commands for an embedded host", async () => {
-    const { guide: text } = await guide.handler({ probe: true, includeCli: false }, ctx);
+    const { guide: text } = await guide.handler(
+      { probe: true, includeCli: false },
+      ctx,
+    );
 
     expect(text.startsWith(PROGRAM_GUIDE)).toBe(true);
+    expect(text).toContain("meta.graph");
+    expect(text).toContain('kind: "loop"');
+    expect(text).toContain("display-only");
     expect(text).not.toContain("orc launch");
     expect(text).not.toContain("orc capabilities");
     expect(text).not.toContain("## 2. Validate and launch");
@@ -70,20 +81,31 @@ describe("guide (baked-in capabilities)", () => {
   });
 
   it("appends and deduplicates registered extension guides", async () => {
-    const extensionGuide = "## Example extensions\n\nUse `ext.example_document(...)`.";
+    const extensionGuide =
+      "## Example extensions\n\nUse `ext.example_document(...)`.";
     const extensions: Registry["extensions"] = new Map([
-      ["example_document", {
-        name: "example_document",
-        guide: extensionGuide,
-        readOnly: false,
-        async execute() { return null; },
-      }],
-      ["example_gate", {
-        name: "example_gate",
-        guide: extensionGuide,
-        readOnly: true,
-        async execute() { return null; },
-      }],
+      [
+        "example_document",
+        {
+          name: "example_document",
+          guide: extensionGuide,
+          readOnly: false,
+          async execute() {
+            return null;
+          },
+        },
+      ],
+      [
+        "example_gate",
+        {
+          name: "example_gate",
+          guide: extensionGuide,
+          readOnly: true,
+          async execute() {
+            return null;
+          },
+        },
+      ],
     ]);
 
     const { guide: text } = await guide.handler(
@@ -107,8 +129,15 @@ describe("guide (baked-in capabilities)", () => {
         throw new Error("unused");
       },
     };
-    const r: Registry = { ...registry, harnesses: new Map([[boom.name, boom]]), defaultHarness: "boom" };
-    const { guide: text } = await guide.handler({ probe: true }, { registry: r });
+    const r: Registry = {
+      ...registry,
+      harnesses: new Map([[boom.name, boom]]),
+      defaultHarness: "boom",
+    };
+    const { guide: text } = await guide.handler(
+      { probe: true },
+      { registry: r },
+    );
     // capabilities catches per-harness errors, so the section still renders,
     // marking the harness unavailable rather than failing the guide.
     expect(text.startsWith(GUIDE)).toBe(true);

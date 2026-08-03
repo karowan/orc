@@ -45,6 +45,26 @@ function writeRunningRun(runId: string): void {
   fs.writeFileSync(paths.traces, "");
 }
 
+function writeApproval(runId: string, approvalId: string): void {
+  const traces = new JsonlAppender<TraceRecord>(runPaths(runId).traces);
+  traces.append({
+    t: "event",
+    atMs: Date.now(),
+    event: {
+      kind: "approval-requested",
+      approval: {
+        id: approvalId,
+        runId,
+        seq: 0,
+        toolName: "example.document-gate",
+        input: {},
+        requestedAtMs: Date.now(),
+      },
+    },
+  });
+  traces.close();
+}
+
 describe("@karowanorg/orc-sdk", () => {
   it("launches through the package-owned entry with the SDK registry cwd", async () => {
     const configDir = path.join(home, "config");
@@ -148,5 +168,84 @@ if (process.argv.includes("--capabilities")) {
         },
       },
     ]);
+  });
+
+  it("does not let direct response data retarget a different run or approval", async () => {
+    writeRunningRun("trusted_run");
+    writeApproval("trusted_run", "trusted_approval");
+    writeRunningRun("spoofed_run");
+    writeApproval("spoofed_run", "spoofed_approval");
+    const spoofedDecision = {
+      behavior: "allow",
+      runId: "spoofed_run",
+      approvalId: "spoofed_approval",
+    } as unknown as Parameters<Orc["respond"]>[2];
+
+    await new Orc().respond(
+      "trusted_run",
+      "trusted_approval",
+      spoofedDecision,
+    );
+
+    expect(readControl("trusted_run")).toMatchObject([
+      {
+        t: "approval",
+        approvalId: "trusted_approval",
+        decision: { behavior: "allow" },
+      },
+    ]);
+    expect(readControl("spoofed_run")).toEqual([]);
+  });
+
+  it("parses watch responses without allowing trusted IDs to be overwritten", async () => {
+    writeRunningRun("watched_run");
+    writeApproval("watched_run", "watched_approval");
+    writeRunningRun("spoofed_watch_run");
+    writeApproval("spoofed_watch_run", "spoofed_watch_approval");
+    const events = new Orc().run("watched_run").watch(1);
+    const iterator = events[Symbol.asyncIterator]();
+    const next = await iterator.next();
+    expect(next.done).toBe(false);
+    expect(next.value?.kind).toBe("approval-requested");
+    if (!next.value || next.value.kind !== "approval-requested") {
+      throw new Error("expected approval event");
+    }
+    const spoofedDecision = {
+      behavior: "allow",
+      runId: "spoofed_watch_run",
+      approvalId: "spoofed_watch_approval",
+    } as unknown as Parameters<typeof next.value.respond>[0];
+
+    await next.value.respond(spoofedDecision);
+    await iterator.return?.();
+
+    expect(readControl("watched_run")).toMatchObject([
+      {
+        t: "approval",
+        approvalId: "watched_approval",
+        decision: { behavior: "allow" },
+      },
+    ]);
+    expect(readControl("spoofed_watch_run")).toEqual([]);
+  });
+
+  it("rejects malformed untyped watch responses at the operation boundary", async () => {
+    writeRunningRun("parsed_watch_run");
+    writeApproval("parsed_watch_run", "parsed_watch_approval");
+    const events = new Orc().run("parsed_watch_run").watch(1);
+    const iterator = events[Symbol.asyncIterator]();
+    const next = await iterator.next();
+    if (!next.value || next.value.kind !== "approval-requested") {
+      throw new Error("expected approval event");
+    }
+    const malformedDecision = {
+      behavior: "allow",
+      message: 42,
+    } as unknown as Parameters<typeof next.value.respond>[0];
+
+    await expect(next.value.respond(malformedDecision)).rejects.toThrow();
+    await iterator.return?.();
+
+    expect(readControl("parsed_watch_run")).toEqual([]);
   });
 });

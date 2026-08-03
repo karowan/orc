@@ -26,6 +26,7 @@ import {
   type LeafRequest,
   type LeafTraceRecord,
   type Policy,
+  type ProgramMeta,
   type RunManifest,
   type RunStatus,
   type ThunkSpec,
@@ -33,7 +34,12 @@ import {
   type TraceRecord,
   type UiPresentation,
 } from "./contracts.js";
-import { boundString, canonicalJson, digestJson, sha256Hex } from "./canonical.js";
+import {
+  boundString,
+  canonicalJson,
+  digestJson,
+  sha256Hex,
+} from "./canonical.js";
 import { validateAgainstSchema } from "./jsonschema.js";
 import { compileProgram } from "./compile.js";
 import { ProgramVM } from "./engine.js";
@@ -51,21 +57,49 @@ import {
   writeResult,
   type RunPaths,
 } from "./rundir.js";
-import { openApprovals, projectStatus, resolveApprovalDecision, statusForRun } from "./status.js";
+import {
+  openApprovals,
+  projectStatus,
+  resolveApprovalDecision,
+  statusForRun,
+} from "./status.js";
 
 const READ_ONLY_SHUTDOWN_GRACE_MS = 1_000;
 const PRESENTATION_DOCUMENT_BYTES = 128 * 1024;
+const PRESENTATION_MEDIA_TYPE =
+  /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:\s*;\s*[A-Za-z0-9!#$%&'*+.^_`|~-]+\s*=\s*(?:"[^"\r\n]*"|[A-Za-z0-9!#$%&'*+.^_`|~-]+))*$/;
 
-function normalizePresentation(value: UiPresentation | undefined): UiPresentation | undefined {
+function normalizeMediaType(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 255 ||
+    !PRESENTATION_MEDIA_TYPE.test(value)
+  ) {
+    throw new Error(
+      `invalid presentation document media type: ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+function normalizePresentation(
+  value: UiPresentation | undefined,
+): UiPresentation | undefined {
   if (value === undefined) return undefined;
-  if (!value || typeof value !== "object") throw new Error("presentation must be an object");
+  if (!value || typeof value !== "object")
+    throw new Error("presentation must be an object");
   const presentation: UiPresentation = {};
-  if (value.title !== undefined) presentation.title = boundString(String(value.title), 512);
-  if (value.summary !== undefined) presentation.summary = boundString(String(value.summary), 4 * 1024);
+  if (value.title !== undefined)
+    presentation.title = boundString(String(value.title), 512);
+  if (value.summary !== undefined)
+    presentation.summary = boundString(String(value.summary), 4 * 1024);
   if (value.fields !== undefined) {
-    if (!Array.isArray(value.fields)) throw new Error("presentation fields must be an array");
+    if (!Array.isArray(value.fields))
+      throw new Error("presentation fields must be an array");
     presentation.fields = value.fields.slice(0, 32).map((field) => {
-      if (!field || typeof field !== "object") throw new Error("presentation field must be an object");
+      if (!field || typeof field !== "object")
+        throw new Error("presentation field must be an object");
       const kind = field.kind ?? "text";
       if (!["text", "code", "path", "url"].includes(kind)) {
         throw new Error(`unknown presentation field kind: ${String(kind)}`);
@@ -78,28 +112,36 @@ function normalizePresentation(value: UiPresentation | undefined): UiPresentatio
     });
   }
   if (value.documents !== undefined) {
-    if (!Array.isArray(value.documents)) throw new Error("presentation documents must be an array");
+    if (!Array.isArray(value.documents))
+      throw new Error("presentation documents must be an array");
     presentation.documents = value.documents.slice(0, 8).map((document) => {
-      if (!document || typeof document !== "object") throw new Error("presentation document must be an object");
-      const mediaType = document.mediaType ?? "text/plain";
-      if (mediaType !== "text/plain" && mediaType !== "text/markdown") {
-        throw new Error(`unknown presentation document media type: ${String(mediaType)}`);
-      }
+      if (!document || typeof document !== "object")
+        throw new Error("presentation document must be an object");
+      const mediaType = normalizeMediaType(document.mediaType ?? "text/plain");
       return {
         label: boundString(String(document.label), 256),
         path: boundString(String(document.path), 8 * 1024),
-        ...(document.sha256 !== undefined ? { sha256: boundString(String(document.sha256), 256) } : {}),
+        ...(document.sha256 !== undefined
+          ? { sha256: boundString(String(document.sha256), 256) }
+          : {}),
         mediaType,
         ...(document.content !== undefined
-          ? { content: boundString(String(document.content), PRESENTATION_DOCUMENT_BYTES) }
+          ? {
+              content: boundString(
+                String(document.content),
+                PRESENTATION_DOCUMENT_BYTES,
+              ),
+            }
           : {}),
       };
     });
   }
   if (value.badges !== undefined) {
-    if (!Array.isArray(value.badges)) throw new Error("presentation badges must be an array");
+    if (!Array.isArray(value.badges))
+      throw new Error("presentation badges must be an array");
     presentation.badges = value.badges.slice(0, 16).map((badge) => {
-      if (!badge || typeof badge !== "object") throw new Error("presentation badge must be an object");
+      if (!badge || typeof badge !== "object")
+        throw new Error("presentation badge must be an object");
       const tone = badge.tone ?? "neutral";
       if (!["neutral", "success", "warning", "danger"].includes(tone)) {
         throw new Error(`unknown presentation badge tone: ${String(tone)}`);
@@ -108,7 +150,9 @@ function normalizePresentation(value: UiPresentation | undefined): UiPresentatio
         key: boundString(String(badge.key), 128),
         label: boundString(String(badge.label), 256),
         value: boundString(String(badge.value), 2 * 1024),
-        ...(badge.href !== undefined ? { href: boundString(String(badge.href), 8 * 1024) } : {}),
+        ...(badge.href !== undefined
+          ? { href: boundString(String(badge.href), 8 * 1024) }
+          : {}),
         tone,
       };
     });
@@ -116,16 +160,21 @@ function normalizePresentation(value: UiPresentation | undefined): UiPresentatio
   return presentation;
 }
 
-function normalizeApprovalActions(actions: ApprovalAction[] | undefined): ApprovalAction[] | undefined {
+function normalizeApprovalActions(
+  actions: ApprovalAction[] | undefined,
+): ApprovalAction[] | undefined {
   if (actions === undefined) return undefined;
   if (!Array.isArray(actions) || actions.length === 0 || actions.length > 8) {
     throw new Error("approval actions must contain between 1 and 8 entries");
   }
   const ids = new Set<string>();
   return actions.map((action) => {
-    if (!action || typeof action !== "object") throw new Error("approval action must be an object");
+    if (!action || typeof action !== "object")
+      throw new Error("approval action must be an object");
     if (!/^[a-zA-Z0-9_-]+$/.test(action.id) || ids.has(action.id)) {
-      throw new Error(`invalid or duplicate approval action id: ${String(action.id)}`);
+      throw new Error(
+        `invalid or duplicate approval action id: ${String(action.id)}`,
+      );
     }
     ids.add(action.id);
     if (action.behavior !== "allow" && action.behavior !== "deny") {
@@ -189,17 +238,23 @@ export function sourceRequestsWrite(source: string): boolean {
   return /readOnly\s*:\s*false/.test(source);
 }
 
-export async function prepareRun(opts: LaunchOptions, registry: Registry): Promise<RunManifest> {
+export async function prepareRun(
+  opts: LaunchOptions,
+  registry: Registry,
+): Promise<RunManifest> {
   const { bundle, sha256 } = await compileProgram(opts.programPath);
   const cwd = fs.realpathSync(path.resolve(opts.cwd ?? process.cwd()));
-  if (!fs.statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${cwd}`);
+  if (!fs.statSync(cwd).isDirectory())
+    throw new Error(`cwd is not a directory: ${cwd}`);
   const brief = opts.brief?.trim();
   if (!brief) throw new Error("brief is required");
   if (opts.budgetUsd !== undefined && !(opts.budgetUsd > 0)) {
     throw new Error("budget must be a positive USD amount");
   }
   const manifest: RunManifest = {
-    runId: newRunId(opts.name ?? path.basename(opts.programPath).replace(/\.[^.]+$/, "")),
+    runId: newRunId(
+      opts.name ?? path.basename(opts.programPath).replace(/\.[^.]+$/, ""),
+    ),
     name: opts.name,
     programPath: path.resolve(opts.programPath),
     programSha256: sha256,
@@ -234,6 +289,7 @@ interface InflightLeaf {
   abort: AbortController;
   lastEventAtMs: number;
   idleTimeoutMs: number | false;
+  pendingApprovalCount: number;
   groupId?: string;
 }
 
@@ -252,7 +308,15 @@ export async function superviseRun(
   try {
     journalOut = new JsonlAppender<JournalRecord>(paths.journal);
     traceOut = new JsonlAppender<TraceRecord>(paths.traces);
-    const sup = new Supervisor(manifest, paths, registry, hooks, policy, journalOut, traceOut);
+    const sup = new Supervisor(
+      manifest,
+      paths,
+      registry,
+      hooks,
+      policy,
+      journalOut,
+      traceOut,
+    );
     // Watch control.jsonl so approval responses / cancels are picked up within
     // milliseconds instead of on the next poll tick — responsive UI approvals.
     fs.closeSync(fs.openSync(paths.control, "a")); // touch: create if absent, never modify
@@ -297,12 +361,13 @@ class Supervisor {
   private terminalError: string | null = null;
   private terminalErrorSeq: number | undefined;
   /** Latest cumulative cost for each durable leaf attempt. */
-  private costByAttempt = new Map<string, number>();
+  private costByAttempt = new Map<string, number | null>();
   private leafTasks = new Set<Promise<void>>();
   private writeLeafTasks = new Set<Promise<void>>();
   private stopping = false;
   private replayCallCursor = 0; // verified against callRecords during replay
   private phaseNames: string[] = [];
+  private programMetaRecorded = false;
 
   constructor(
     private readonly manifest: RunManifest,
@@ -332,15 +397,24 @@ class Supervisor {
         : Math.min(latestFinish.controlOffset, controls.length);
     const bundle = fs.readFileSync(this.paths.program, "utf8");
     if (sha256Hex(bundle) !== this.manifest.programSha256) {
-      throw new DivergenceError("program bundle does not match manifest hash", {});
+      throw new DivergenceError(
+        "program bundle does not match manifest hash",
+        {},
+      );
     }
+    this.programMetaRecorded = readTraces(this.manifest.runId).some(
+      (trace) => trace.t === "program-meta",
+    );
 
     // Attempt starts and spend are durable so crashes cannot reset retry
     // allowance or make prior attempts free. Completion records preserve
     // compatibility with runs created before attempt-start records existed.
     for (const rec of journal) {
       if (rec.t === "attempt" || rec.t === "done") {
-        this.attemptBySeq.set(rec.seq, Math.max(this.attemptBySeq.get(rec.seq) ?? 0, rec.attempt));
+        this.attemptBySeq.set(
+          rec.seq,
+          Math.max(this.attemptBySeq.get(rec.seq) ?? 0, rec.attempt),
+        );
       } else if (rec.t === "cost") {
         this.costByAttempt.set(attemptKey(rec.seq, rec.attempt), rec.costUsd);
       }
@@ -348,15 +422,20 @@ class Supervisor {
     // Old runs recorded cost only in traces. Recover the latest revision for
     // each attempt, but never override a durable cost record.
     if (this.manifest.budgetUsd !== undefined) {
-      const legacyCosts = new Map<string, { rev: number; cost: number }>();
+      const legacyCosts = new Map<
+        string,
+        { rev: number; cost: number | null }
+      >();
       for (const tr of readTraces(this.manifest.runId)) {
         if (tr.t !== "leaf" || tr.costUsd === undefined) continue;
         const key = attemptKey(tr.seq, tr.attempt);
         const current = legacyCosts.get(key);
-        if (!current || tr.rev >= current.rev) legacyCosts.set(key, { rev: tr.rev, cost: tr.costUsd });
+        if (!current || tr.rev >= current.rev)
+          legacyCosts.set(key, { rev: tr.rev, cost: tr.costUsd });
       }
       for (const [key, value] of legacyCosts) {
-        if (!this.costByAttempt.has(key)) this.costByAttempt.set(key, value.cost);
+        if (!this.costByAttempt.has(key))
+          this.costByAttempt.set(key, value.cost);
       }
       this.checkBudget();
     }
@@ -383,7 +462,10 @@ class Supervisor {
           // Legacy finishes lack causal metadata. Keep their conservative
           // final-call string check rather than guessing across concurrency.
           const finalSeq = priorCalls.at(-1)?.seq;
-          const finalCompletion = finalSeq === undefined ? undefined : effective.get(finalSeq)?.record;
+          const finalCompletion =
+            finalSeq === undefined
+              ? undefined
+              : effective.get(finalSeq)?.record;
           if (
             finalSeq !== undefined &&
             finalCompletion?.status === "error" &&
@@ -412,7 +494,10 @@ class Supervisor {
       this.traceEvent({
         kind: "approval-resolved",
         approvalId: approval.id,
-        decision: { behavior: "deny", message: "approval expired when the supervisor restarted" },
+        decision: {
+          behavior: "deny",
+          message: "approval expired when the supervisor restarted",
+        },
         by: "supervisor",
       });
     }
@@ -420,18 +505,16 @@ class Supervisor {
     const replaying = priorCalls.length > 0;
     try {
       // ---- boot the VM (the initial drain can already trip the step budget)
-      this.vm = await ProgramVM.create(
-        bundle,
-        this.policy,
-        {
-          onCall: (seq, spec) => this.onCall(seq, spec, replaying),
-          onLog: (m) => this.traceEvent({ kind: "log", message: m }),
-          onPhase: (name) => {
-            if (!this.phaseNames.includes(name)) this.phaseNames.push(name);
-            this.traceEvent({ kind: "phase", name });
-          },
+      this.vm = await ProgramVM.create(bundle, this.policy, {
+        onCall: (seq, spec) => this.onCall(seq, spec, replaying),
+        onLog: (m) => this.traceEvent({ kind: "log", message: m }),
+        onProgramMeta: (meta) => this.traceProgramMeta(meta),
+        onPhase: (name, state, scope) => {
+          if (state === "started" && !this.phaseNames.includes(name))
+            this.phaseNames.push(name);
+          this.traceEvent({ kind: "phase", name, state, scope });
         },
-      );
+      });
       return await this.execute(effective, retrySeqs, persistRetry);
     } catch (err) {
       // Policy violations (write gate, caps, step budget) are TERMINAL RUN
@@ -460,7 +543,9 @@ class Supervisor {
   ): Promise<RunStatus> {
     {
       // ---- replay: deliver effective completions in journal order ----------
-      const deliveryOrder = [...effective.values()].sort((a, b) => a.index - b.index);
+      const deliveryOrder = [...effective.values()].sort(
+        (a, b) => a.index - b.index,
+      );
       for (const { record } of deliveryOrder) {
         this.checkNewCallsAgainstJournal();
         if (!this.vm.pendingSeqs().includes(record.seq)) {
@@ -474,9 +559,13 @@ class Supervisor {
       this.checkNewCallsAgainstJournal();
       // Unconsumed suffix check: every prior call must have been re-made.
       if (this.replayCallCursor < this.callRecords.length) {
-        const pendingReplayable = this.callRecords.slice(this.replayCallCursor).map((c) => c.seq);
+        const pendingReplayable = this.callRecords
+          .slice(this.replayCallCursor)
+          .map((c) => c.seq);
         const vmPending = new Set(this.vm.pendingSeqs());
-        const nevermade = pendingReplayable.filter((s) => !vmPending.has(s) && !this.specBySeq.has(s));
+        const nevermade = pendingReplayable.filter(
+          (s) => !vmPending.has(s) && !this.specBySeq.has(s),
+        );
         if (nevermade.length > 0 && this.vm.state().state !== "pending") {
           throw new DivergenceError(
             `program completed replay with unconsumed journal calls: seq ${nevermade.join(",")}`,
@@ -488,7 +577,11 @@ class Supervisor {
       // Persist only after the candidate history replayed cleanly. A failed
       // resume must not mutate the journal into a permanently re-armed state.
       if (persistRetry) {
-        this.journalOut.append({ t: "retry", seqs: retrySeqs, atMs: Date.now() });
+        this.journalOut.append({
+          t: "retry",
+          seqs: retrySeqs,
+          atMs: Date.now(),
+        });
       }
 
       // ---- re-dispatch undelivered calls (re-orient for writes) ------------
@@ -517,7 +610,11 @@ class Supervisor {
     this.reorientSeqs.add(seq);
   }
 
-  private onCall(seq: number, spec: ThunkSpec, verifyAgainstJournal: boolean): void {
+  private onCall(
+    seq: number,
+    spec: ThunkSpec,
+    verifyAgainstJournal: boolean,
+  ): void {
     // ext leaves: readOnly comes from the registration, not the program.
     if (spec.kind.startsWith("ext:")) {
       const ext = this.registry.extensions.get(spec.kind.slice(4));
@@ -543,24 +640,44 @@ class Supervisor {
         this.replayCallCursor++;
       } else {
         if (seq >= this.policy.maxCommands) {
-          throw new PolicyError(`program exceeded maxCommands (${this.policy.maxCommands})`);
+          throw new PolicyError(
+            `program exceeded maxCommands (${this.policy.maxCommands})`,
+          );
         }
-        if (spec.prompt && Buffer.byteLength(spec.prompt) > this.policy.maxPromptBytes) {
-          throw new PolicyError(`prompt for call ${seq} exceeds ${this.policy.maxPromptBytes} bytes`);
+        if (
+          spec.prompt &&
+          Buffer.byteLength(spec.prompt) > this.policy.maxPromptBytes
+        ) {
+          throw new PolicyError(
+            `prompt for call ${seq} exceeds ${this.policy.maxPromptBytes} bytes`,
+          );
         }
         // Extension payloads are subject to the same byte cap as prompts, and
         // are validated against the extension's declared inputSchema.
         if (spec.kind.startsWith("ext:")) {
           const name = spec.kind.slice(4);
           const ext = this.registry.extensions.get(name);
-          if (!ext) throw new PolicyError(`call ${seq} uses unregistered extension ext.${name}`);
-          const payloadBytes = Buffer.byteLength(canonicalJson(spec.payload ?? null));
+          if (!ext)
+            throw new PolicyError(
+              `call ${seq} uses unregistered extension ext.${name}`,
+            );
+          const payloadBytes = Buffer.byteLength(
+            canonicalJson(spec.payload ?? null),
+          );
           if (payloadBytes > this.policy.maxPromptBytes) {
-            throw new PolicyError(`ext.${name} payload for call ${seq} exceeds ${this.policy.maxPromptBytes} bytes`);
+            throw new PolicyError(
+              `ext.${name} payload for call ${seq} exceeds ${this.policy.maxPromptBytes} bytes`,
+            );
           }
           if (ext.inputSchema !== undefined) {
-            const problem = validateAgainstSchema(spec.payload ?? null, ext.inputSchema as Json);
-            if (problem) throw new PolicyError(`ext.${name} payload for call ${seq} fails inputSchema: ${problem}`);
+            const problem = validateAgainstSchema(
+              spec.payload ?? null,
+              ext.inputSchema as Json,
+            );
+            if (problem)
+              throw new PolicyError(
+                `ext.${name} payload for call ${seq} fails inputSchema: ${problem}`,
+              );
           }
         }
         if (!spec.readOnly && !this.manifest.allowWrites) {
@@ -586,7 +703,9 @@ class Supervisor {
     this.newCalls = [];
   }
 
-  private materializeOutcome(rec: CompletionRecord): { status: "ok"; value: Json } | { status: "error"; error: string } {
+  private materializeOutcome(
+    rec: CompletionRecord,
+  ): { status: "ok"; value: Json } | { status: "error"; error: string } {
     if (rec.status === "ok" && rec.resultSha) {
       return { status: "ok", value: readResult(this.paths, rec.resultSha) };
     }
@@ -633,7 +752,9 @@ class Supervisor {
         this.completed.length === 0 &&
         this.newCalls.length === 0
       ) {
-        this.finishFailed("program is awaiting something orc will never resolve (deadlock)");
+        this.finishFailed(
+          "program is awaiting something orc will never resolve (deadlock)",
+        );
         return;
       }
 
@@ -650,20 +771,30 @@ class Supervisor {
   }
 
   private pumpDispatch(): void {
-    while (this.inflight.size < this.manifest.maxParallel && this.dispatchQueue.length > 0) {
+    while (
+      this.inflight.size < this.manifest.maxParallel &&
+      this.dispatchQueue.length > 0
+    ) {
       const seq = this.dispatchQueue.shift()!;
       const spec = this.specBySeq.get(seq);
       if (!spec) continue;
       const attempt = (this.attemptBySeq.get(seq) ?? 0) + 1;
       this.attemptBySeq.set(seq, attempt);
       this.journalOut.append({ t: "attempt", seq, attempt, atMs: Date.now() });
+      const extensionIdleTimeout = spec.kind.startsWith("ext:")
+        ? this.registry.extensions.get(spec.kind.slice(4))?.idleTimeout
+        : undefined;
       const leaf: InflightLeaf = {
         seq,
         attempt,
         spec,
         abort: new AbortController(),
         lastEventAtMs: Date.now(),
-        idleTimeoutMs: spec.idleTimeoutMs ?? this.manifest.idleTimeoutMs,
+        idleTimeoutMs:
+          extensionIdleTimeout ??
+          spec.idleTimeoutMs ??
+          this.manifest.idleTimeoutMs,
+        pendingApprovalCount: 0,
         groupId: spec.groupId,
       };
       this.inflight.set(seq, leaf);
@@ -673,7 +804,10 @@ class Supervisor {
         .catch((err: unknown) =>
           this.onLeafDone(leaf, {
             status: "error",
-            error: boundString(String(err instanceof Error ? err.stack ?? err.message : err), this.policy.maxErrorBytes),
+            error: boundString(
+              String(err instanceof Error ? (err.stack ?? err.message) : err),
+              this.policy.maxErrorBytes,
+            ),
           }),
         )
         .finally(() => {
@@ -686,7 +820,10 @@ class Supervisor {
     }
   }
 
-  private onLeafDone(leaf: InflightLeaf, outcome: LeafOutcome["outcome"]): void {
+  private onLeafDone(
+    leaf: InflightLeaf,
+    outcome: LeafOutcome["outcome"],
+  ): void {
     if (this.stopping || !this.inflight.has(leaf.seq)) return; // already aborted+settled
     this.inflight.delete(leaf.seq);
 
@@ -723,13 +860,23 @@ class Supervisor {
     if (outcome.status === "ok") {
       const size = Buffer.byteLength(canonicalJson(outcome.value));
       if (size > this.policy.maxResultBytes) {
-        outcome = { status: "error", error: `result exceeds cap (${size} > ${this.policy.maxResultBytes} bytes)` };
+        outcome = {
+          status: "error",
+          error: `result exceeds cap (${size} > ${this.policy.maxResultBytes} bytes)`,
+        };
       }
     }
     let rec: CompletionRecord;
     if (outcome.status === "ok") {
       const { sha, sizeBytes } = writeResult(this.paths, outcome.value);
-      rec = { t: "done", seq: done.seq, status: "ok", resultSha: sha, sizeBytes, attempt: done.attempt };
+      rec = {
+        t: "done",
+        seq: done.seq,
+        status: "ok",
+        resultSha: sha,
+        sizeBytes,
+        attempt: done.attempt,
+      };
     } else {
       rec = {
         t: "done",
@@ -758,7 +905,8 @@ class Supervisor {
       const after = this.vm.state();
       if (
         after.state === "error" &&
-        (after.error === outcome.error || after.error.startsWith(`${outcome.error}\n`))
+        (after.error === outcome.error ||
+          after.error.startsWith(`${outcome.error}\n`))
       ) {
         this.terminalErrorSeq = seq;
       }
@@ -784,7 +932,10 @@ class Supervisor {
       this.journalOut.append({
         t: "finish",
         status: "failed",
-        error: boundString(state.error ?? "program failed", this.policy.maxErrorBytes),
+        error: boundString(
+          state.error ?? "program failed",
+          this.policy.maxErrorBytes,
+        ),
         errorSeq: this.terminalErrorSeq,
         controlOffset: this.controlConsumed,
       });
@@ -804,7 +955,8 @@ class Supervisor {
   }
 
   private abortAll(reason: string): void {
-    for (const leaf of this.inflight.values()) leaf.abort.abort(new Error(reason));
+    for (const leaf of this.inflight.values())
+      leaf.abort.abort(new Error(reason));
   }
 
   private async stopAll(reason: string): Promise<void> {
@@ -832,7 +984,9 @@ class Supervisor {
   }
 
   // -------------------------------------------------------------------------
-  private async executeLeaf(leaf: InflightLeaf): Promise<LeafOutcome["outcome"]> {
+  private async executeLeaf(
+    leaf: InflightLeaf,
+  ): Promise<LeafOutcome["outcome"]> {
     const { spec, seq, attempt } = leaf;
     const cwd = spec.cwd ?? this.manifest.cwd;
     const executor = this.registry.executor;
@@ -841,7 +995,7 @@ class Supervisor {
     const toolCalls = new Map<string, ToolCallTrace>();
     let tokensIn: number | undefined;
     let tokensOut: number | undefined;
-    let costUsd: number | undefined;
+    let costUsd: number | null | undefined;
     let costEstimated: boolean | undefined;
     let sessionId: string | undefined;
     let resolvedModel: string | undefined = spec.model;
@@ -858,7 +1012,10 @@ class Supervisor {
       id: spec.id,
       phase: spec.phase,
       kind: spec.kind,
-      harness: spec.kind === "agent" ? (spec.harness ?? this.manifest.defaultHarness) : undefined,
+      harness:
+        spec.kind === "agent"
+          ? (spec.harness ?? this.manifest.defaultHarness)
+          : undefined,
       cwd,
       readOnly: spec.readOnly,
       startMs,
@@ -866,7 +1023,11 @@ class Supervisor {
       brief: boundString(this.manifest.brief, 4 * 1024),
       reoriented: this.reorientSeqs.has(seq) || undefined,
     };
-    const emitTrace = (status: LeafTraceRecord["status"], extra: Partial<LeafTraceRecord> = {}, fsync = false) => {
+    const emitTrace = (
+      status: LeafTraceRecord["status"],
+      extra: Partial<LeafTraceRecord> = {},
+      fsync = false,
+    ) => {
       if (this.stopping) return;
       this.traceOut.append(
         {
@@ -894,7 +1055,9 @@ class Supervisor {
       extension = this.registry.extensions.get(name);
       if (extension?.present?.input) {
         try {
-          presentationInput = normalizePresentation(extension.present.input(spec.payload ?? null));
+          presentationInput = normalizePresentation(
+            extension.present.input(spec.payload ?? null),
+          );
         } catch (error) {
           this.harnessLog(
             seq,
@@ -949,11 +1112,18 @@ class Supervisor {
       if (spec.kind.startsWith("ext:")) {
         const name = spec.kind.slice(4);
         const ext = extension;
-        if (!ext) throw new Error(`unknown extension leaf: ext.${name} (register it in orc.config)`);
-        const value = this.validateResult((await ext.execute(spec.payload ?? null, ctx)) ?? null);
+        if (!ext)
+          throw new Error(
+            `unknown extension leaf: ext.${name} (register it in orc.config)`,
+          );
+        const value = this.validateResult(
+          (await ext.execute(spec.payload ?? null, ctx)) ?? null,
+        );
         if (ext.present?.output) {
           try {
-            presentationOutput = normalizePresentation(ext.present.output(spec.payload ?? null, value));
+            presentationOutput = normalizePresentation(
+              ext.present.output(spec.payload ?? null, value),
+            );
           } catch (error) {
             this.harnessLog(
               seq,
@@ -961,7 +1131,11 @@ class Supervisor {
             );
           }
         }
-        emitTrace("ok", { endMs: Date.now(), output: value, presentation: presentation() }, true);
+        emitTrace(
+          "ok",
+          { endMs: Date.now(), output: value, presentation: presentation() },
+          true,
+        );
         return { status: "ok", value };
       }
 
@@ -1000,15 +1174,35 @@ class Supervisor {
       let result: Json | undefined;
       let errorMsg: string | undefined;
       for await (const ev of harness.invoke(req, ctx)) {
-        if (this.stopping) throw new Error(`aborted: ${String(leaf.abort.signal.reason ?? "run ended")}`);
+        if (this.stopping)
+          throw new Error(
+            `aborted: ${String(leaf.abort.signal.reason ?? "run ended")}`,
+          );
         assertHarnessEvent(ev);
         leaf.lastEventAtMs = Date.now();
         this.applyEvent(ev, toolCalls, (u) => {
           tokensIn = u.tokensIn ?? tokensIn;
           tokensOut = u.tokensOut ?? tokensOut;
-          if (u.costUsd !== undefined) {
+          if (u.costUsd === null) {
+            const changed = costUsd !== null;
+            costUsd = null;
+            costEstimated = undefined;
+            this.costByAttempt.set(attemptKey(seq, attempt), null);
+            if (changed) {
+              this.journalOut.append({
+                t: "cost",
+                seq,
+                attempt,
+                costUsd: null,
+                atMs: Date.now(),
+              });
+            }
+            this.checkBudget();
+          } else if (u.costUsd !== undefined) {
             if (!Number.isFinite(u.costUsd) || u.costUsd < 0) {
-              throw new Error(`harness reported invalid costUsd: ${String(u.costUsd)}`);
+              throw new Error(
+                `harness reported invalid costUsd: ${String(u.costUsd)}`,
+              );
             }
             const changed = u.costUsd !== costUsd;
             costUsd = u.costUsd;
@@ -1034,22 +1228,39 @@ class Supervisor {
         }
         if (ev.kind === "result") result = ev.output;
         if (ev.kind === "error") errorMsg = ev.message;
-        if (ev.kind === "tool-call-open" || ev.kind === "tool-call-close") emitTrace("running");
+        if (ev.kind === "tool-call-open" || ev.kind === "tool-call-close")
+          emitTrace("running");
         if (ev.kind === "denied") {
-          this.traceEvent({ kind: "denied", seq, toolName: ev.toolName, reason: ev.reason });
+          this.traceEvent({
+            kind: "denied",
+            seq,
+            toolName: ev.toolName,
+            reason: ev.reason,
+          });
         }
       }
       if (leaf.abort.signal.aborted) {
-        throw new Error(`aborted: ${String(leaf.abort.signal.reason ?? "cancelled")}`);
+        throw new Error(
+          `aborted: ${String(leaf.abort.signal.reason ?? "cancelled")}`,
+        );
       }
-      if (errorMsg !== undefined && result === undefined) throw new Error(errorMsg);
-      if (result === undefined) throw new Error("harness produced no result event");
+      if (errorMsg !== undefined && result === undefined)
+        throw new Error(errorMsg);
+      if (result === undefined)
+        throw new Error("harness produced no result event");
       result = this.validateResult(result, spec.schema);
       emitTrace("ok", { endMs: Date.now(), output: result }, true);
       return { status: "ok", value: result };
     } catch (err) {
-      const msg = boundString(String(err instanceof Error ? (err.message ?? err) : err), this.policy.maxErrorBytes);
-      emitTrace("error", { endMs: Date.now(), error: msg, presentation: presentation() }, true);
+      const msg = boundString(
+        String(err instanceof Error ? (err.message ?? err) : err),
+        this.policy.maxErrorBytes,
+      );
+      emitTrace(
+        "error",
+        { endMs: Date.now(), error: msg, presentation: presentation() },
+        true,
+      );
       return { status: "error", error: msg };
     }
   }
@@ -1059,11 +1270,15 @@ class Supervisor {
     try {
       canonical = canonicalJson(value);
     } catch (err) {
-      throw new Error(`result is not valid JSON: ${String(err instanceof Error ? err.message : err)}`);
+      throw new Error(
+        `result is not valid JSON: ${String(err instanceof Error ? err.message : err)}`,
+      );
     }
     const size = Buffer.byteLength(canonical);
     if (size > this.policy.maxResultBytes) {
-      throw new Error(`result exceeds cap (${size} > ${this.policy.maxResultBytes} bytes)`);
+      throw new Error(
+        `result exceeds cap (${size} > ${this.policy.maxResultBytes} bytes)`,
+      );
     }
     const snapshot = JSON.parse(canonical) as Json;
     if (schema !== undefined) {
@@ -1076,10 +1291,21 @@ class Supervisor {
   private applyEvent(
     ev: HarnessEvent,
     toolCalls: Map<string, ToolCallTrace>,
-    usage: (u: { tokensIn?: number; tokensOut?: number; costUsd?: number; costEstimated?: boolean }) => void,
+    usage: (u: {
+      tokensIn?: number;
+      tokensOut?: number;
+      costUsd?: number | null;
+      costEstimated?: boolean;
+    }) => void,
   ): void {
     if (ev.kind === "tool-call-open") {
-      toolCalls.set(ev.id, { id: ev.id, name: ev.name, input: ev.input, startMs: ev.atMs, status: "running" });
+      toolCalls.set(ev.id, {
+        id: ev.id,
+        name: ev.name,
+        input: ev.input,
+        startMs: ev.atMs,
+        status: "running",
+      });
     } else if (ev.kind === "tool-call-close") {
       const tc = toolCalls.get(ev.id);
       if (tc) {
@@ -1092,11 +1318,20 @@ class Supervisor {
     }
   }
 
-  private async reorientPreamble(executor: Executor, cwd: string): Promise<string> {
+  private async reorientPreamble(
+    executor: Executor,
+    cwd: string,
+  ): Promise<string> {
     let snapshot = "";
     try {
-      const status = await executor.run(["git", "status", "--porcelain"], { cwd, timeoutMs: 5_000 });
-      const diff = await executor.run(["git", "diff", "--stat"], { cwd, timeoutMs: 5_000 });
+      const status = await executor.run(["git", "status", "--porcelain"], {
+        cwd,
+        timeoutMs: 5_000,
+      });
+      const diff = await executor.run(["git", "diff", "--stat"], {
+        cwd,
+        timeoutMs: 5_000,
+      });
       if (status.code === 0) {
         snapshot = `Observed working-tree state:\n${status.stdout.trim() || "(clean)"}\n${diff.stdout.trim()}`;
       }
@@ -1116,7 +1351,10 @@ class Supervisor {
     leaf: InflightLeaf,
   ): Promise<ApprovalDecision> {
     if (this.stopping || leaf.abort.signal.aborted) {
-      return Promise.resolve({ behavior: "deny", message: "leaf is no longer running" });
+      return Promise.resolve({
+        behavior: "deny",
+        message: "leaf is no longer running",
+      });
     }
     const id = `a_${leaf.seq}_${randomUUID()}`;
     const presentation = normalizePresentation(req.presentation);
@@ -1129,17 +1367,30 @@ class Supervisor {
       requestedAtMs: Date.now(),
     };
     this.traceEvent({ kind: "approval-requested", approval });
+    leaf.pendingApprovalCount += 1;
     return new Promise<ApprovalDecision>((resolve) => {
       const settle = (d: ApprovalDecision) => {
         this.pendingApprovals.delete(id);
+        leaf.pendingApprovalCount = Math.max(0, leaf.pendingApprovalCount - 1);
+        // Operator wait time is not leaf inactivity. Start a fresh idle window
+        // when execution resumes after the decision.
+        leaf.lastEventAtMs = Date.now();
         resolve(d);
       };
       const pending = { approval, settle };
       this.pendingApprovals.set(id, pending);
       leaf.abort.signal.addEventListener("abort", () => {
         if (this.pendingApprovals.get(id) !== pending) return;
-        const decision = { behavior: "deny", message: "leaf aborted while approval was pending" } as const;
-        this.traceEvent({ kind: "approval-resolved", approvalId: id, decision, by: "supervisor" });
+        const decision = {
+          behavior: "deny",
+          message: "leaf aborted while approval was pending",
+        } as const;
+        this.traceEvent({
+          kind: "approval-resolved",
+          approvalId: id,
+          decision,
+          by: "supervisor",
+        });
         settle(decision);
       });
     });
@@ -1164,8 +1415,16 @@ class Supervisor {
         const pending = this.pendingApprovals.get(msg.approvalId);
         if (pending) {
           try {
-            const decision = resolveApprovalDecision(pending.approval, msg.decision);
-            this.traceEvent({ kind: "approval-resolved", approvalId: msg.approvalId, decision, by: msg.by });
+            const decision = resolveApprovalDecision(
+              pending.approval,
+              msg.decision,
+            );
+            this.traceEvent({
+              kind: "approval-resolved",
+              approvalId: msg.approvalId,
+              decision,
+              by: msg.by,
+            });
             pending.settle(decision);
           } catch (error) {
             this.harnessLog(
@@ -1182,7 +1441,11 @@ class Supervisor {
   private checkIdleTimeouts(): void {
     const now = Date.now();
     for (const leaf of this.inflight.values()) {
-      if (typeof leaf.idleTimeoutMs === "number" && now - leaf.lastEventAtMs > leaf.idleTimeoutMs) {
+      if (
+        typeof leaf.idleTimeoutMs === "number" &&
+        leaf.pendingApprovalCount === 0 &&
+        now - leaf.lastEventAtMs > leaf.idleTimeoutMs
+      ) {
         const error = `idle timeout: no harness events for ${leaf.idleTimeoutMs}ms`;
         leaf.abort.abort(new Error(error));
         // AbortSignal is cooperative. Settle the deterministic leaf outcome
@@ -1192,14 +1455,29 @@ class Supervisor {
     }
   }
 
-  private traceEvent(event: Extract<TraceRecord, { t: "event" }>["event"]): void {
-    this.traceOut.append({ t: "event", atMs: Date.now(), event }, { fsync: false });
+  private traceEvent(
+    event: Extract<TraceRecord, { t: "event" }>["event"],
+  ): void {
+    this.traceOut.append(
+      { t: "event", atMs: Date.now(), event },
+      { fsync: false },
+    );
+    this.hooks.onUpdate?.(this.manifest.runId);
+  }
+
+  private traceProgramMeta(meta: ProgramMeta | undefined): void {
+    if (!meta || this.programMetaRecorded) return;
+    this.traceOut.append({ t: "program-meta", atMs: Date.now(), meta });
+    this.programMetaRecorded = true;
     this.hooks.onUpdate?.(this.manifest.runId);
   }
 
   private harnessLog(seq: number, message: string): void {
     if (this.stopping) return;
-    this.traceOut.append({ t: "hlog", seq, atMs: Date.now(), message }, { fsync: false });
+    this.traceOut.append(
+      { t: "hlog", seq, atMs: Date.now(), message },
+      { fsync: false },
+    );
     this.hooks.onUpdate?.(this.manifest.runId);
   }
 
@@ -1212,7 +1490,17 @@ class Supervisor {
     const budget = this.manifest.budgetUsd;
     if (budget === undefined || this.terminalError) return;
     let total = 0;
-    for (const v of this.costByAttempt.values()) total += v;
+    for (const value of this.costByAttempt.values()) {
+      if (value === null) {
+        const msg =
+          "budget cannot be enforced: cost estimate became unavailable";
+        this.traceEvent({ kind: "log", message: `${msg} — failing run` });
+        this.terminalError = msg;
+        this.signal();
+        return;
+      }
+      total += value;
+    }
     if (total > budget) {
       const msg = `budget exceeded: estimated cost ~$${total.toFixed(2)} passed the $${budget.toFixed(2)} budget`;
       this.traceEvent({ kind: "log", message: `${msg} — failing run` });
@@ -1241,7 +1529,9 @@ class Supervisor {
 }
 
 // ---------------------------------------------------------------------------
-function lastFinish(journal: JournalRecord[]): Extract<JournalRecord, { t: "finish" }> | undefined {
+function lastFinish(
+  journal: JournalRecord[],
+): Extract<JournalRecord, { t: "finish" }> | undefined {
   let out: Extract<JournalRecord, { t: "finish" }> | undefined;
   let outIdx = -1;
   journal.forEach((r, i) => {
@@ -1298,7 +1588,8 @@ function assertHarnessEvent(value: unknown): asserts value is HarnessEvent {
   const event = value as Record<string, unknown>;
   const kind = event.kind;
   const stringField = (name: string): void => {
-    if (typeof event[name] !== "string") throw new Error(`harness ${String(kind)} event has invalid ${name}`);
+    if (typeof event[name] !== "string")
+      throw new Error(`harness ${String(kind)} event has invalid ${name}`);
   };
   const optionalString = (name: string): void => {
     if (event[name] !== undefined && typeof event[name] !== "string") {
@@ -1338,8 +1629,11 @@ function assertHarnessEvent(value: unknown): asserts value is HarnessEvent {
     case "usage":
       finiteNumber("tokensIn", true);
       finiteNumber("tokensOut", true);
-      finiteNumber("costUsd", true);
-      if (event.costEstimated !== undefined && typeof event.costEstimated !== "boolean") {
+      if (event.costUsd !== null) finiteNumber("costUsd", true);
+      if (
+        event.costEstimated !== undefined &&
+        typeof event.costEstimated !== "boolean"
+      ) {
         throw new Error("harness usage event has invalid costEstimated");
       }
       break;
@@ -1368,7 +1662,11 @@ function assertHarnessEvent(value: unknown): asserts value is HarnessEvent {
   }
 }
 
-export function leafSystemPrompt(readOnly: boolean, cwd: string, brief: string): string {
+export function leafSystemPrompt(
+  readOnly: boolean,
+  cwd: string,
+  brief: string,
+): string {
   const mutation = readOnly
     ? "This task is READ-ONLY: inspect freely but do not modify files, run mutating commands, or change system state."
     : "This task may modify files under the working directory. Make only the changes the task requires.";

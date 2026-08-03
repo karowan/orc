@@ -12,6 +12,7 @@
  * Scenarios:
  *   happy         command item + structured agent message + usage + completed
  *   usage-multiple duplicate usage plus a second distinct request
+ *   usage-unavailable priced request followed by usage without local token data
  *   resume-usage  resumed thread with historical totals and a small last request
  *   unknown-model thread resolves to a model without a pricing profile
  *   fast-tier     thread resolves to Terra on the Priority service tier
@@ -107,6 +108,7 @@ async function driveTurn() {
   switch (scenario) {
     case "happy":
     case "usage-multiple":
+    case "usage-unavailable":
     case "resume-usage":
     case "unknown-model":
     case "fast-tier": {
@@ -146,6 +148,22 @@ async function driveTurn() {
             cacheWriteInputTokens: 20,
             outputTokens: 50,
             reasoningOutputTokens: 0,
+          },
+        );
+      } else if (scenario === "usage-unavailable") {
+        usage();
+        emitUsage(
+          {
+            totalTokens: 1,
+            reasoningOutputTokens: 1,
+          },
+          {
+            totalTokens: 121,
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 10,
+            outputTokens: 20,
+            reasoningOutputTokens: 1,
           },
         );
       } else if (scenario === "resume-usage") {

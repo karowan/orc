@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { prepareRun, superviseRun, type Registry } from "../src/supervisor.js";
-import { appendControl, JsonlAppender, readResult, readTraces, runPaths } from "../src/rundir.js";
+import {
+  appendControl,
+  JsonlAppender,
+  readResult,
+  readTraces,
+  runPaths,
+} from "../src/rundir.js";
 import { openApprovals } from "../src/status.js";
 import type { ExtensionLeaf, Harness } from "../src/contracts.js";
 import { fakeExecutor } from "./helpers/fake.js";
@@ -18,24 +24,63 @@ beforeEach(() => {
 const approvalHarness: Harness = {
   name: "appr",
   async discover() {
-    return { available: true, models: [], approvalModes: ["manual"], structuredOutput: true, sessions: false };
+    return {
+      available: true,
+      models: [],
+      approvalModes: ["manual"],
+      structuredOutput: true,
+      sessions: false,
+    };
   },
   async *invoke(req, ctx) {
-    yield { kind: "tool-call-open", id: "t1", name: "Bash", input: { command: "rm -rf x" }, atMs: Date.now() };
-    const decision = await ctx.requestApproval({ runId: req.runId, seq: req.seq, toolName: "Bash", input: { command: "rm -rf x" } });
-    yield { kind: "tool-call-close", id: "t1", status: decision.behavior === "allow" ? "ok" : "error", atMs: Date.now() };
-    yield { kind: "result", output: { behavior: decision.behavior, message: decision.message ?? null } };
+    yield {
+      kind: "tool-call-open",
+      id: "t1",
+      name: "Bash",
+      input: { command: "rm -rf x" },
+      atMs: Date.now(),
+    };
+    const decision = await ctx.requestApproval({
+      runId: req.runId,
+      seq: req.seq,
+      toolName: "Bash",
+      input: { command: "rm -rf x" },
+    });
+    yield {
+      kind: "tool-call-close",
+      id: "t1",
+      status: decision.behavior === "allow" ? "ok" : "error",
+      atMs: Date.now(),
+    };
+    yield {
+      kind: "result",
+      output: {
+        behavior: decision.behavior,
+        message: decision.message ?? null,
+      },
+    };
   },
 };
 
 function registry(): Registry {
-  return { harnesses: new Map([["appr", approvalHarness]]), extensions: new Map(), defaultHarness: "appr", executor: fakeExecutor };
+  return {
+    harnesses: new Map([["appr", approvalHarness]]),
+    extensions: new Map(),
+    defaultHarness: "appr",
+    executor: fakeExecutor,
+  };
 }
 
 async function launch(reg: Registry) {
   const program = path.join(home, "p.orc.ts");
-  fs.writeFileSync(program, `export default async ({ agent }: any) => agent("do it", { id: "leaf" });\n`);
-  return prepareRun({ programPath: program, cwd: home, brief: "b", approvalMode: "manual" }, reg);
+  fs.writeFileSync(
+    program,
+    `export default async ({ agent }: any) => agent("do it", { id: "leaf" });\n`,
+  );
+  return prepareRun(
+    { programPath: program, cwd: home, brief: "b", approvalMode: "manual" },
+    reg,
+  );
 }
 
 async function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
@@ -58,14 +103,20 @@ describe("permission bubbling (end to end)", () => {
           documents: [
             {
               label: "Requirements",
-              path: "/tmp/requirements.md",
+              path: "/tmp/requirements.html",
+              mediaType: "text/html; charset=utf-8",
               content: "x".repeat(140 * 1024),
             },
           ],
         }),
         output: (_payload, result) => ({
           title: "Gate result",
-          fields: [{ label: "Action", value: String((result as { action?: unknown }).action) }],
+          fields: [
+            {
+              label: "Action",
+              value: String((result as { action?: unknown }).action),
+            },
+          ],
         }),
       },
       async execute(_payload, ctx) {
@@ -81,9 +132,17 @@ describe("permission bubbling (end to end)", () => {
           seq: 999,
           toolName: "example.document-gate",
           input: { secret: "raw payload is not projected" },
-          presentation: { title: "Approve requirements", summary: "<script>unsafe</script>" },
+          presentation: {
+            title: "Approve requirements",
+            summary: "<script>unsafe</script>",
+          },
           actions: [
-            { id: "approve", label: "Approve", behavior: "allow", tone: "primary" },
+            {
+              id: "approve",
+              label: "Approve",
+              behavior: "allow",
+              tone: "primary",
+            },
             {
               id: "revise",
               label: "Request revision",
@@ -94,24 +153,42 @@ describe("permission bubbling (end to end)", () => {
         });
       },
     };
-    const reg = { ...registry(), extensions: new Map([[extension.name, extension]]) };
+    const reg = {
+      ...registry(),
+      extensions: new Map([[extension.name, extension]]),
+    };
     const program = path.join(home, "presented-gate.orc.ts");
-    fs.writeFileSync(program, `export default async ({ ext }: any) => ext.presented_gate({ hidden: "value" });\n`);
-    const manifest = await prepareRun({ programPath: program, cwd: home, brief: "b" }, reg);
+    fs.writeFileSync(
+      program,
+      `export default async ({ ext }: any) => ext.presented_gate({ hidden: "value" });\n`,
+    );
+    const manifest = await prepareRun(
+      { programPath: program, cwd: home, brief: "b" },
+      reg,
+    );
     const running = superviseRun(manifest.runId, reg);
 
     await waitFor(() => openApprovals(readTraces(manifest.runId)).length === 1);
     const pending = openApprovals(readTraces(manifest.runId))[0]!;
-    const runningLeaves = readTraces(manifest.runId).filter((record) => record.t === "leaf");
+    const runningLeaves = readTraces(manifest.runId).filter(
+      (record) => record.t === "leaf",
+    );
     expect(runningLeaves).toHaveLength(2);
-    expect(runningLeaves.at(-1)?.t === "leaf" ? runningLeaves.at(-1)?.presentation?.live : undefined).toMatchObject({
+    expect(
+      runningLeaves.at(-1)?.t === "leaf"
+        ? runningLeaves.at(-1)?.presentation?.live
+        : undefined,
+    ).toMatchObject({
       title: "Live gate state",
       fields: [{ label: "State", value: "waiting" }],
     });
     expect(pending).toMatchObject({
       runId: manifest.runId,
       seq: 0,
-      presentation: { title: "Approve requirements", summary: "<script>unsafe</script>" },
+      presentation: {
+        title: "Approve requirements",
+        summary: "<script>unsafe</script>",
+      },
       actions: [
         { id: "approve", behavior: "allow" },
         { id: "revise", behavior: "deny", message: { required: true } },
@@ -120,7 +197,11 @@ describe("permission bubbling (end to end)", () => {
     appendControl(manifest.runId, {
       t: "approval",
       approvalId: pending.id,
-      decision: { behavior: "deny", action: "revise", message: "Add rollback criteria" },
+      decision: {
+        behavior: "deny",
+        action: "revise",
+        message: "Add rollback criteria",
+      },
       by: "test",
       atMs: Date.now(),
     });
@@ -139,12 +220,72 @@ describe("permission bubbling (end to end)", () => {
     const leaf = readTraces(manifest.runId)
       .filter((record) => record.t === "leaf" && record.status === "ok")
       .at(-1);
-    expect(leaf?.t === "leaf" ? leaf.presentation?.output?.fields?.[0]?.value : undefined).toBe("revise");
-    expect(leaf?.t === "leaf" ? leaf.presentation?.live?.fields?.[0]?.value : undefined).toBe("waiting");
-    const content = leaf?.t === "leaf" ? leaf.presentation?.input?.documents?.[0]?.content : undefined;
+    expect(
+      leaf?.t === "leaf"
+        ? leaf.presentation?.output?.fields?.[0]?.value
+        : undefined,
+    ).toBe("revise");
+    expect(
+      leaf?.t === "leaf"
+        ? leaf.presentation?.live?.fields?.[0]?.value
+        : undefined,
+    ).toBe("waiting");
+    const content =
+      leaf?.t === "leaf"
+        ? leaf.presentation?.input?.documents?.[0]?.content
+        : undefined;
+    expect(
+      leaf?.t === "leaf"
+        ? leaf.presentation?.input?.documents?.[0]?.mediaType
+        : undefined,
+    ).toBe("text/html; charset=utf-8");
     expect(Buffer.byteLength(content ?? "")).toBeLessThan(129 * 1024);
     expect(content).toContain("truncated");
-    expect(readTraces(manifest.runId).filter((record) => record.t === "leaf")).toHaveLength(3);
+    expect(
+      readTraces(manifest.runId).filter((record) => record.t === "leaf"),
+    ).toHaveLength(3);
+  });
+
+  it("rejects malformed presentation document media types", async () => {
+    const extension: ExtensionLeaf = {
+      name: "malformed_presentation",
+      readOnly: true,
+      async execute(_payload, ctx) {
+        return ctx.requestApproval({
+          runId: "spoofed",
+          seq: 999,
+          toolName: "invalid-document",
+          input: {},
+          presentation: {
+            documents: [
+              {
+                label: "Invalid",
+                path: "/tmp/invalid",
+                mediaType: "not a media type",
+              },
+            ],
+          },
+        });
+      },
+    };
+    const reg = {
+      ...registry(),
+      extensions: new Map([[extension.name, extension]]),
+    };
+    const program = path.join(home, "malformed-presentation.orc.ts");
+    fs.writeFileSync(
+      program,
+      `export default async ({ ext }: any) => ext.malformed_presentation({});\n`,
+    );
+    const manifest = await prepareRun(
+      { programPath: program, cwd: home, brief: "b" },
+      reg,
+    );
+
+    const status = await superviseRun(manifest.runId, reg);
+
+    expect(status.state).toBe("failed");
+    expect(status.error).toContain("invalid presentation document media type");
   });
 
   it("stamps extension approvals with supervisor-owned run and sequence identity", async () => {
@@ -166,8 +307,14 @@ describe("permission bubbling (end to end)", () => {
       extensions: new Map([["gate", extension]]),
     };
     const program = path.join(home, "gate.orc.ts");
-    fs.writeFileSync(program, `export default async ({ ext }: any) => ext.gate({});\n`);
-    const manifest = await prepareRun({ programPath: program, cwd: home, brief: "b" }, reg);
+    fs.writeFileSync(
+      program,
+      `export default async ({ ext }: any) => ext.gate({});\n`,
+    );
+    const manifest = await prepareRun(
+      { programPath: program, cwd: home, brief: "b" },
+      reg,
+    );
     const runPromise = superviseRun(manifest.runId, reg);
 
     await waitFor(() => openApprovals(readTraces(manifest.runId)).length === 1);
@@ -184,13 +331,69 @@ describe("permission bubbling (end to end)", () => {
     expect((await runPromise).state).toBe("completed");
   });
 
+  it("does not apply the leaf idle timeout while waiting for operator approval", async () => {
+    const extension: ExtensionLeaf = {
+      name: "gate_without_timeout",
+      readOnly: true,
+      async execute(_payload, ctx) {
+        const decision = await ctx.requestApproval({
+          runId: "spoofed",
+          seq: 999,
+          toolName: "example.document-gate",
+          input: {},
+        });
+        return { behavior: decision.behavior };
+      },
+    };
+    const reg = {
+      ...registry(),
+      extensions: new Map([[extension.name, extension]]),
+    };
+    const program = path.join(home, "gate-without-timeout.orc.ts");
+    fs.writeFileSync(
+      program,
+      `export default async ({ ext }: any) => ext.gate_without_timeout({});\n`,
+    );
+    const manifest = await prepareRun(
+      {
+        programPath: program,
+        cwd: home,
+        brief: "b",
+        idleTimeout: 25,
+      },
+      reg,
+    );
+    let settled = false;
+    const runPromise = superviseRun(manifest.runId, reg).finally(() => {
+      settled = true;
+    });
+
+    await waitFor(() => openApprovals(readTraces(manifest.runId)).length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    expect(settled).toBe(false);
+    const pending = openApprovals(readTraces(manifest.runId));
+    expect(pending).toHaveLength(1);
+    appendControl(manifest.runId, {
+      t: "approval",
+      approvalId: pending[0].id,
+      decision: { behavior: "allow" },
+      by: "test",
+      atMs: Date.now(),
+    });
+
+    expect((await runPromise).state).toBe("completed");
+  });
+
   it("honors a cancel queued before the first supervisor starts", async () => {
     const reg = registry();
     const manifest = await launch(reg);
     appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
 
     expect((await superviseRun(manifest.runId, reg)).state).toBe("cancelled");
-    expect(readTraces(manifest.runId).filter((record) => record.t === "leaf")).toHaveLength(0);
+    expect(
+      readTraces(manifest.runId).filter((record) => record.t === "leaf"),
+    ).toHaveLength(0);
   });
 
   it("honors a cancel queued after an unfinished supervisor crash", async () => {
@@ -202,7 +405,9 @@ describe("permission bubbling (end to end)", () => {
     appendControl(manifest.runId, { t: "cancel", atMs: Date.now() });
 
     expect((await superviseRun(manifest.runId, reg)).state).toBe("cancelled");
-    expect(readTraces(manifest.runId).filter((record) => record.t === "leaf")).toHaveLength(0);
+    expect(
+      readTraces(manifest.runId).filter((record) => record.t === "leaf"),
+    ).toHaveLength(0);
   });
 
   it("does not replay controls from a cancelled supervisor when the run resumes", async () => {
@@ -319,11 +524,17 @@ describe("permission bubbling (end to end)", () => {
     const status = await runPromise;
     expect(status.state).toBe("completed");
     // the leaf saw the allow decision
-    const body = readResult(runPaths(manifest.runId), status.resultSha!) as { behavior: string };
+    const body = readResult(runPaths(manifest.runId), status.resultSha!) as {
+      behavior: string;
+    };
     expect(body.behavior).toBe("allow");
     // and there's an approval-resolved event in the trace
     const events = readTraces(manifest.runId).filter((t) => t.t === "event");
-    expect(events.some((e) => e.t === "event" && e.event.kind === "approval-resolved")).toBe(true);
+    expect(
+      events.some(
+        (e) => e.t === "event" && e.event.kind === "approval-resolved",
+      ),
+    ).toBe(true);
     // no approvals left pending
     expect(openApprovals(readTraces(manifest.runId))).toHaveLength(0);
   });
@@ -343,7 +554,10 @@ describe("permission bubbling (end to end)", () => {
     });
     const status = await runPromise;
     expect(status.state).toBe("completed");
-    const body = readResult(runPaths(manifest.runId), status.resultSha!) as { behavior: string; message: string };
+    const body = readResult(runPaths(manifest.runId), status.resultSha!) as {
+      behavior: string;
+      message: string;
+    };
     expect(body.behavior).toBe("deny");
     expect(body.message).toBe("nope, too dangerous");
   });
@@ -357,7 +571,10 @@ describe("permission bubbling (end to end)", () => {
       `export default async ({ parallel }: any) =>
          parallel([{prompt:"a"},{prompt:"b"},{prompt:"c"},{prompt:"d"}]);\n`,
     );
-    const manifest = await prepareRun({ programPath: program, cwd: home, brief: "b", approvalMode: "manual" }, reg);
+    const manifest = await prepareRun(
+      { programPath: program, cwd: home, brief: "b", approvalMode: "manual" },
+      reg,
+    );
     const runPromise = superviseRun(manifest.runId, reg);
 
     // All 4 bubble simultaneously as distinct pending approvals.
@@ -368,7 +585,12 @@ describe("permission bubbling (end to end)", () => {
     expect(new Set(pending.map((a) => a.seq))).toEqual(new Set([0, 1, 2, 3]));
 
     // Answer them out of order, mixing allow/deny — each resolves on its own id.
-    const decisions: Record<number, "allow" | "deny"> = { 0: "allow", 1: "deny", 2: "allow", 3: "deny" };
+    const decisions: Record<number, "allow" | "deny"> = {
+      0: "allow",
+      1: "deny",
+      2: "allow",
+      3: "deny",
+    };
     for (const a of [...pending].reverse()) {
       appendControl(manifest.runId, {
         t: "approval",
@@ -384,8 +606,13 @@ describe("permission bubbling (end to end)", () => {
     // each leaf saw its own decision
     const traces = readTraces(manifest.runId);
     for (const [seq, want] of Object.entries(decisions)) {
-      const leaf = traces.find((t) => t.t === "leaf" && t.seq === Number(seq) && t.status === "ok");
-      const out = leaf && leaf.t === "leaf" ? (leaf.output as { behavior?: string }) : undefined;
+      const leaf = traces.find(
+        (t) => t.t === "leaf" && t.seq === Number(seq) && t.status === "ok",
+      );
+      const out =
+        leaf && leaf.t === "leaf"
+          ? (leaf.output as { behavior?: string })
+          : undefined;
       expect(out?.behavior, `seq ${seq}`).toBe(want);
     }
   });

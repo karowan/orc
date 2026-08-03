@@ -15,7 +15,11 @@ import type {
 import { LocalExecutor } from "@karowanorg/orc-executors";
 import { createCodexHarness } from "../src/harness.js";
 
-const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-app-server.mjs");
+const FIXTURE = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "fake-app-server.mjs",
+);
 const local = new LocalExecutor();
 
 interface RunResult {
@@ -26,7 +30,10 @@ interface RunResult {
   cwd: string;
 }
 
-function makeReq(cwd: string, overrides: Partial<LeafRequest> = {}): LeafRequest {
+function makeReq(
+  cwd: string,
+  overrides: Partial<LeafRequest> = {},
+): LeafRequest {
   return {
     runId: "run-1",
     seq: 1,
@@ -45,6 +52,7 @@ async function runScenario(
   reqOverrides: Partial<LeafRequest> = {},
   opts: {
     decision?: ApprovalDecision;
+    approvalDelayMs?: number;
     signal?: AbortSignal;
     onEvent?: (ev: HarnessEvent, ctx: { abort: () => void }) => void;
   } = {},
@@ -64,6 +72,11 @@ async function runScenario(
     executor: local,
     requestApproval: async (req) => {
       approvals.push(req);
+      if (opts.approvalDelayMs) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, opts.approvalDelayMs),
+        );
+      }
       return opts.decision ?? { behavior: "allow" };
     },
     signal: opts.signal ?? controller.signal,
@@ -82,13 +95,18 @@ async function runScenario(
   return { events, record, approvals, logs, cwd };
 }
 
-function methodParams(record: RunResult["record"], method: string): Record<string, unknown> {
+function methodParams(
+  record: RunResult["record"],
+  method: string,
+): Record<string, unknown> {
   const msg = record.find((m) => m.method === method);
   expect(msg, `expected recorded ${method}`).toBeDefined();
   return (msg!.params ?? {}) as Record<string, unknown>;
 }
 
-function approvalResponse(record: RunResult["record"]): Record<string, unknown> {
+function approvalResponse(
+  record: RunResult["record"],
+): Record<string, unknown> {
   const note = record.find((m) => m.note === "approval-response");
   expect(note, "expected recorded approval response").toBeDefined();
   return (note!.response ?? {}) as Record<string, unknown>;
@@ -114,18 +132,25 @@ describe("codexHarness happy path", () => {
     expect(kinds[0]).toBe("model");
     const model = events[0] as Extract<HarnessEvent, { kind: "model" }>;
     expect(model.kind === "model" && "reasoningEffort" in model).toBe(true);
-    const session = events.find((e) => e.kind === "session") as Extract<HarnessEvent, { kind: "session" }>;
+    const session = events.find((e) => e.kind === "session") as Extract<
+      HarnessEvent,
+      { kind: "session" }
+    >;
     expect(session.sessionId).toBe("thread-fake-1");
     expect(kinds.indexOf("model")).toBeLessThan(kinds.indexOf("session"));
 
     expect(kinds).toContain("tool-call-open");
     expect(kinds).toContain("tool-call-close");
-    expect(kinds.indexOf("tool-call-open")).toBeLessThan(kinds.indexOf("tool-call-close"));
+    expect(kinds.indexOf("tool-call-open")).toBeLessThan(
+      kinds.indexOf("tool-call-close"),
+    );
     const open = events.find((e) => e.kind === "tool-call-open")!;
     expect(open.kind === "tool-call-open" && open.name).toBe("command");
 
     const text = events
-      .filter((e): e is Extract<HarnessEvent, { kind: "text" }> => e.kind === "text")
+      .filter(
+        (e): e is Extract<HarnessEvent, { kind: "text" }> => e.kind === "text",
+      )
       .map((e) => e.delta)
       .join("");
     expect(text).toBe('{"ok":true,"n":2}');
@@ -137,7 +162,10 @@ describe("codexHarness happy path", () => {
 
     const result = events.at(-1)!;
     expect(result.kind).toBe("result");
-    expect(result.kind === "result" && result.output).toEqual({ ok: true, n: 2 });
+    expect(result.kind === "result" && result.output).toEqual({
+      ok: true,
+      n: 2,
+    });
 
     // Wire mapping assertions.
     const threadStart = methodParams(record, "thread/start");
@@ -163,23 +191,35 @@ describe("codexHarness happy path", () => {
   it("prices the default model resolved by thread/start", async () => {
     const { events } = await runScenario("happy");
     const model = events.find((event) => event.kind === "model");
-    expect(model).toEqual({ kind: "model", model: "gpt-5.6-sol", reasoningEffort: "medium" });
+    expect(model).toEqual({
+      kind: "model",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+    });
     const usage = events.find((event) => event.kind === "usage");
     expect(usage?.kind === "usage" && usage.costUsd).toBeCloseTo(0.0010225, 10);
   });
 
   it("prices an explicit Bedrock model instead of the thread default", async () => {
-    const { events } = await runScenario("happy", { model: "openai.gpt-5.6-sol" });
+    const { events } = await runScenario("happy", {
+      model: "openai.gpt-5.6-sol",
+    });
     const model = events.find((event) => event.kind === "model");
-    expect(model?.kind === "model" && model.model).toBe("openai.gpt-5.6-sol");
+    expect(model?.kind === "model" && model.model).toBe(
+      "openai.gpt-5.6-sol",
+    );
     const usage = events.find((event) => event.kind === "usage");
-    expect(usage?.kind === "usage" && usage.costUsd).toBeCloseTo(0.00112475, 10);
+    expect(usage?.kind === "usage" && usage.costUsd).toBeCloseTo(
+      0.00112475,
+      10,
+    );
   });
 
   it("deduplicates identical usage and accumulates distinct requests", async () => {
     const { events } = await runScenario("usage-multiple");
     const usages = events.filter(
-      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> =>
+        event.kind === "usage",
     );
     expect(usages).toHaveLength(2);
     expect(usages[0]).toMatchObject({ tokensIn: 100, tokensOut: 20 });
@@ -187,45 +227,79 @@ describe("codexHarness happy path", () => {
     expect(usages[1].costUsd).toBeCloseTo(0.00255, 10);
   });
 
+  it("invalidates an earlier estimate when later request usage cannot be priced", async () => {
+    const { events } = await runScenario("usage-unavailable");
+    const usages = events.filter(
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> =>
+        event.kind === "usage",
+    );
+    expect(usages).toHaveLength(2);
+    expect(usages[0]).toMatchObject({
+      tokensIn: 100,
+      tokensOut: 20,
+      costEstimated: true,
+    });
+    expect(usages[0].costUsd).toBeCloseTo(0.0010225, 10);
+    expect(usages[1]).toEqual({ kind: "usage", costUsd: null });
+  });
+
   it("prices only request-local usage when resuming a thread", async () => {
-    const { events } = await runScenario("resume-usage", { sessionId: "thread-old-7" });
+    const { events } = await runScenario("resume-usage", {
+      sessionId: "thread-old-7",
+    });
     const usage = events.find(
-      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> =>
+        event.kind === "usage",
     );
     expect(usage).toMatchObject({ tokensIn: 100, tokensOut: 20 });
     expect(usage?.costUsd).toBeCloseTo(0.0010225, 10);
   });
 
-  it("omits cost when the resolved model has no exact price", async () => {
+  it("marks cost unavailable when the resolved model has no exact price", async () => {
     const { events } = await runScenario("unknown-model");
     const usage = events.find(
-      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> =>
+        event.kind === "usage",
     );
     expect(usage).toMatchObject({ tokensIn: 100, tokensOut: 20 });
-    expect(usage && "costUsd" in usage).toBe(false);
+    expect(usage?.costUsd).toBeNull();
   });
 
   it("applies the resolved Fast/Priority service tier", async () => {
     const { events } = await runScenario("fast-tier");
     const usage = events.find(
-      (event): event is Extract<HarnessEvent, { kind: "usage" }> => event.kind === "usage",
+      (event): event is Extract<HarnessEvent, { kind: "usage" }> =>
+        event.kind === "usage",
     );
     expect(usage?.costUsd).toBeCloseTo(0.000818, 10);
   });
 
   it("filesystem policy is orthogonal to approval mode", async () => {
     // approval policy comes from the mode...
-    const bypass = await runScenario("happy", { approvalMode: "bypass", readOnly: false });
-    expect(methodParams(bypass.record, "thread/start").approvalPolicy).toBe("never");
-    const manual = await runScenario("happy", { approvalMode: "manual", readOnly: false });
-    expect(methodParams(manual.record, "thread/start").approvalPolicy).toBe("on-request");
+    const bypass = await runScenario("happy", {
+      approvalMode: "bypass",
+      readOnly: false,
+    });
+    expect(methodParams(bypass.record, "thread/start").approvalPolicy).toBe(
+      "never",
+    );
+    const manual = await runScenario("happy", {
+      approvalMode: "manual",
+      readOnly: false,
+    });
+    expect(methodParams(manual.record, "thread/start").approvalPolicy).toBe(
+      "on-request",
+    );
 
     // ...but sandbox comes from readOnly + the sandbox flag, NOT the mode.
     // A default write leaf OMITS the sandbox param → inherits the user's codex
     // config (never more power than the caller).
     expect(methodParams(manual.record, "thread/start").sandbox).toBeUndefined();
     // read-only leaf -> read-only sandbox
-    const ro = await runScenario("happy", { approvalMode: "auto", readOnly: true });
+    const ro = await runScenario("happy", {
+      approvalMode: "auto",
+      readOnly: true,
+    });
     expect(methodParams(ro.record, "thread/start").sandbox).toBe("read-only");
     // opt-in sandbox -> workspace-write (explicit confinement)
     const sb = await runScenario("happy", {
@@ -248,13 +322,17 @@ describe("codexHarness happy path", () => {
       sandbox_workspace_write: { network_access: true },
     });
     // explicit bypass -> danger-full-access (opt-in max)
-    expect(methodParams(bypass.record, "thread/start").sandbox).toBe("danger-full-access");
+    expect(methodParams(bypass.record, "thread/start").sandbox).toBe(
+      "danger-full-access",
+    );
   });
 
   it("returns {text} when no schema is set", async () => {
     const { events } = await runScenario("happy", { schema: undefined });
     const result = events.at(-1)!;
-    expect(result.kind === "result" && result.output).toEqual({ text: '{"ok":true,"n":2}' });
+    expect(result.kind === "result" && result.output).toEqual({
+      text: '{"ok":true,"n":2}',
+    });
   });
 
   it("removes strict-schema null placeholders before returning user output", async () => {
@@ -322,7 +400,9 @@ describe("codexHarness happy path", () => {
     expect(resume.threadId).toBe("thread-old-7");
     expect(resume.runtimeWorkspaceRoots).toEqual([cwd, join(cwd, "../cache")]);
     const session = events.find((e) => e.kind === "session")!;
-    expect(session.kind === "session" && session.sessionId).toBe("thread-old-7");
+    expect(session.kind === "session" && session.sessionId).toBe(
+      "thread-old-7",
+    );
   });
 });
 
@@ -351,6 +431,21 @@ describe("codexHarness approval bridging", () => {
     expect(approvalResponse(record)).toEqual({ decision: "decline" });
     const denied = events.find((e) => e.kind === "denied")!;
     expect(denied.kind === "denied" && denied.reason).toBe("not on my watch");
+  });
+
+  it("suspends the output-idle watchdog while operator approval is pending", async () => {
+    const { record, events } = await runScenario(
+      "approval",
+      { approvalMode: "manual", readOnly: false, idleTimeoutMs: 50 },
+      {
+        approvalDelayMs: 150,
+        decision: { behavior: "allow" },
+      },
+    );
+
+    expect(approvalResponse(record)).toEqual({ decision: "accept" });
+    expect(events.some((event) => event.kind === "error")).toBe(false);
+    expect(events.at(-1)?.kind).toBe("result");
   });
 
   it("answers the legacy execCommandApproval family with approved/denied", async () => {
@@ -468,7 +563,9 @@ describe("codexHarness watchdog and cancellation", () => {
     );
     expect(record.some((m) => m.method === "turn/interrupt")).toBe(true);
     const err = events.find((e) => e.kind === "error")!;
-    expect(err.kind === "error" && err.message).toMatch(/cancelled|interrupted/);
+    expect(err.kind === "error" && err.message).toMatch(
+      /cancelled|interrupted/,
+    );
   });
 });
 
@@ -496,16 +593,35 @@ describe("codexHarness discover", () => {
   }
 
   it("reports version, models, and reasoning efforts from model/list", async () => {
-    const harness = createCodexHarness({ appServerCommand: ["node", FIXTURE, "discover"] });
-    const caps = await harness.discover({ executor: new VersionStubExecutor() });
+    const harness = createCodexHarness({
+      appServerCommand: ["node", FIXTURE, "discover"],
+    });
+    const caps = await harness.discover({
+      executor: new VersionStubExecutor(),
+    });
     expect(caps.available).toBe(true);
     expect(caps.version).toBe("0.144.5");
     // Hidden filtered, default first, each model carries its own effort ladder.
     expect(caps.models).toEqual([
-      { id: "gpt-5.6-sol", displayName: undefined, reasoningEfforts: ["low", "medium", "high"], default: true },
-      { id: "gpt-5.6-luna", displayName: undefined, reasoningEfforts: ["low", "xhigh"], default: undefined },
+      {
+        id: "gpt-5.6-sol",
+        displayName: undefined,
+        reasoningEfforts: ["low", "medium", "high"],
+        default: true,
+      },
+      {
+        id: "gpt-5.6-luna",
+        displayName: undefined,
+        reasoningEfforts: ["low", "xhigh"],
+        default: undefined,
+      },
     ]);
-    expect(caps.approvalModes).toEqual(["manual", "accept-edits", "auto", "bypass"]);
+    expect(caps.approvalModes).toEqual([
+      "manual",
+      "accept-edits",
+      "auto",
+      "bypass",
+    ]);
     expect(caps.structuredOutput).toBe(true);
     expect(caps.sessions).toBe(true);
     expect(caps.detail).toBe("codex app-server model/list");
@@ -519,7 +635,10 @@ describe("codexHarness discover", () => {
       override spawn(): never {
         throw new Error("model/list unavailable");
       }
-      override async run(cmd: string[], opts?: SpawnOptions & { timeoutMs?: number }) {
+      override async run(
+        cmd: string[],
+        opts?: SpawnOptions & { timeoutMs?: number },
+      ) {
         if (cmd[0] === "sh") {
           this.homeCommand = cmd;
           return { code: 0, stdout: "/managed/codex", stderr: "" };
@@ -542,12 +661,18 @@ describe("codexHarness discover", () => {
 
   it("reports unavailable when the codex binary is missing", async () => {
     class NoCodexExecutor extends VersionStubExecutor {
-      override async run(cmd: string[], opts?: SpawnOptions & { timeoutMs?: number }) {
-        if (cmd[0] === "codex") return { code: 127, stdout: "", stderr: "not found" };
+      override async run(
+        cmd: string[],
+        opts?: SpawnOptions & { timeoutMs?: number },
+      ) {
+        if (cmd[0] === "codex")
+          return { code: 127, stdout: "", stderr: "not found" };
         return super.run(cmd, opts);
       }
     }
-    const harness = createCodexHarness({ appServerCommand: ["node", FIXTURE, "discover"] });
+    const harness = createCodexHarness({
+      appServerCommand: ["node", FIXTURE, "discover"],
+    });
     const caps = await harness.discover({ executor: new NoCodexExecutor() });
     expect(caps.available).toBe(false);
     expect(caps.models).toEqual([]);

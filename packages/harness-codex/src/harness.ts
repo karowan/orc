@@ -43,7 +43,11 @@ import type {
   ModelCapability,
   Proc,
 } from "@karowanorg/orc-core";
-import { estimateCostUsd, loadCostRates, type ModelRate } from "@karowanorg/orc-core";
+import {
+  estimateCostUsd,
+  loadCostRates,
+  type ModelRate,
+} from "@karowanorg/orc-core";
 import { JsonRpcClient } from "./rpc.js";
 import {
   extractFirstJsonObject,
@@ -135,13 +139,18 @@ class EventQueue {
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
-  return v !== null && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  return v !== null && typeof v === "object"
+    ? (v as Record<string, unknown>)
+    : {};
 }
 
 /** Is `candidate` lexically inside (or equal to) directory `root`? */
 function withinDir(candidate: string, root: string): boolean {
   const rel = path.relative(path.resolve(root), path.resolve(root, candidate));
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+  return (
+    rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+  );
 }
 
 /** Collect changed file paths from a fileChange item / legacy fileChanges map. */
@@ -151,7 +160,8 @@ function changedPaths(changes: unknown): string[] {
       .map((c) => asRecord(c).path)
       .filter((p): p is string => typeof p === "string");
   }
-  if (changes !== null && typeof changes === "object") return Object.keys(changes);
+  if (changes !== null && typeof changes === "object")
+    return Object.keys(changes);
   return [];
 }
 
@@ -159,10 +169,15 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
   const appServerCommand = options.appServerCommand ?? ["codex", "app-server"];
   const interruptGraceMs = options.interruptGraceMs ?? 2000;
   const clientInfo = options.clientInfo ?? { name: "orc", version: "0.1.0" };
-  const initializeCapabilities = { experimentalApi: true, requestAttestation: false };
+  const initializeCapabilities = {
+    experimentalApi: true,
+    requestAttestation: false,
+  };
   const costRates = loadCostRates(options.costRates);
 
-  async function discover(ctx: { executor: Executor }): Promise<HarnessCapabilities> {
+  async function discover(ctx: {
+    executor: Executor;
+  }): Promise<HarnessCapabilities> {
     const base: HarnessCapabilities = {
       available: false,
       models: [],
@@ -218,23 +233,42 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           return await Promise.race([
             p,
             new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new Error("discover timeout")), ms);
+              timer = setTimeout(
+                () => reject(new Error("discover timeout")),
+                ms,
+              );
             }),
           ]);
         } finally {
           if (timer) clearTimeout(timer);
         }
       };
-      await withTimeout(rpc.request("initialize", { clientInfo, capabilities: initializeCapabilities }), 20_000);
+      await withTimeout(
+        rpc.request("initialize", {
+          clientInfo,
+          capabilities: initializeCapabilities,
+        }),
+        20_000,
+      );
       rpc.notify("initialized", {});
-      const res = await withTimeout(rpc.request<ModelListResult>("model/list", {}), 20_000);
-      const visible = (res.data ?? []).filter((m) => !m.hidden && typeof m.id === "string");
+      const res = await withTimeout(
+        rpc.request<ModelListResult>("model/list", {}),
+        20_000,
+      );
+      const visible = (res.data ?? []).filter(
+        (m) => !m.hidden && typeof m.id === "string",
+      );
       // Default model first.
-      visible.sort((a, b) => Number(b.isDefault ?? false) - Number(a.isDefault ?? false));
+      visible.sort(
+        (a, b) => Number(b.isDefault ?? false) - Number(a.isDefault ?? false),
+      );
       return visible.map((m) => {
         const efforts: string[] = [];
         for (const e of m.supportedReasoningEfforts ?? []) {
-          if (typeof e.reasoningEffort === "string" && !efforts.includes(e.reasoningEffort)) {
+          if (
+            typeof e.reasoningEffort === "string" &&
+            !efforts.includes(e.reasoningEffort)
+          ) {
             efforts.push(e.reasoningEffort);
           }
         }
@@ -250,7 +284,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     }
   }
 
-  async function configTomlModel(executor: Executor): Promise<string | undefined> {
+  async function configTomlModel(
+    executor: Executor,
+  ): Promise<string | undefined> {
     try {
       const codexHome = (
         await executor.run([
@@ -268,13 +304,20 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     }
   }
 
-  function invoke(req: LeafRequest, ctx: HarnessContext): AsyncIterable<HarnessEvent> {
+  function invoke(
+    req: LeafRequest,
+    ctx: HarnessContext,
+  ): AsyncIterable<HarnessEvent> {
     const queue = new EventQueue();
     void runTurn(req, ctx, queue); // runTurn reports its own errors via the queue
     return queue;
   }
 
-  async function runTurn(req: LeafRequest, ctx: HarnessContext, queue: EventQueue): Promise<void> {
+  async function runTurn(
+    req: LeafRequest,
+    ctx: HarnessContext,
+    queue: EventQueue,
+  ): Promise<void> {
     // --- approval-mode mapping (design -> wire) ----------------------------
     const approvalPolicy =
       req.approvalMode === "manual" || req.approvalMode === "accept-edits"
@@ -299,7 +342,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         ? [
             ...new Set(
               [req.cwd, ...(req.sandboxDirs ?? [])].map((root) =>
-                path.normalize(path.isAbsolute(root) ? root : path.resolve(req.cwd, root)),
+                path.normalize(
+                  path.isAbsolute(root) ? root : path.resolve(req.cwd, root),
+                ),
               ),
             ),
           ]
@@ -337,10 +382,23 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     // Output-idle watchdog: any stdout byte resets the timer.
     let idleTimer: NodeJS.Timeout | undefined;
     let idleFired = false;
+    let idlePauseDepth = 0;
+    const clearIdle = (): void => {
+      if (!idleTimer) return;
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    };
     const armIdle = (): void => {
-      if (typeof req.idleTimeoutMs !== "number") return;
-      if (idleTimer) clearTimeout(idleTimer);
+      if (
+        typeof req.idleTimeoutMs !== "number" ||
+        idlePauseDepth > 0 ||
+        idleFired
+      ) {
+        return;
+      }
+      clearIdle();
       idleTimer = setTimeout(() => {
+        idleTimer = undefined;
         idleFired = true;
         queue.push({
           kind: "error",
@@ -350,15 +408,30 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       }, req.idleTimeoutMs);
       idleTimer.unref?.();
     };
+    const pauseIdle = (): void => {
+      idlePauseDepth += 1;
+      clearIdle();
+    };
+    const resumeIdle = (): void => {
+      idlePauseDepth = Math.max(0, idlePauseDepth - 1);
+      if (idlePauseDepth === 0) armIdle();
+    };
     proc.stdout.on("data", armIdle);
     armIdle();
 
     let resolveTurn: (turn: TurnWire) => void;
-    const turnDone = new Promise<TurnWire>((resolve) => (resolveTurn = resolve));
+    const turnDone = new Promise<TurnWire>(
+      (resolve) => (resolveTurn = resolve),
+    );
 
     const onNotification = (method: string, rawParams: unknown): void => {
       const params = asRecord(rawParams);
-      if (typeof params.threadId === "string" && threadId && params.threadId !== threadId) return;
+      if (
+        typeof params.threadId === "string" &&
+        threadId &&
+        params.threadId !== threadId
+      )
+        return;
       switch (method) {
         case "item/started": {
           const item = asRecord(params.item) as ThreadItemWire;
@@ -370,7 +443,10 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
                 kind: "tool-call-open",
                 id: item.id ?? "",
                 name: "command",
-                input: { command: item.command ?? null, cwd: item.cwd ?? null } as Json,
+                input: {
+                  command: item.command ?? null,
+                  cwd: item.cwd ?? null,
+                } as Json,
                 atMs,
               });
               break;
@@ -419,7 +495,8 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             case "fileChange":
             case "webSearch":
             case "mcpToolCall": {
-              const failed = item.status === "failed" || item.status === "declined";
+              const failed =
+                item.status === "failed" || item.status === "declined";
               queue.push({
                 kind: "tool-call-close",
                 id: item.id ?? "",
@@ -431,7 +508,8 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             case "agentMessage": {
               const text = typeof item.text === "string" ? item.text : "";
               lastAgentMessage = text;
-              if (item.phase === "final_answer" || item.phase === undefined) finalAnswer = text;
+              if (item.phase === "final_answer" || item.phase === undefined)
+                finalAnswer = text;
               break;
             }
             default:
@@ -442,7 +520,10 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         case "item/agentMessage/delta": {
           const delta = typeof params.delta === "string" ? params.delta : "";
           const itemId = typeof params.itemId === "string" ? params.itemId : "";
-          messageBuffers.set(itemId, (messageBuffers.get(itemId) ?? "") + delta);
+          messageBuffers.set(
+            itemId,
+            (messageBuffers.get(itemId) ?? "") + delta,
+          );
           if (delta) queue.push({ kind: "text", delta, atMs: Date.now() });
           break;
         }
@@ -457,18 +538,30 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
               "outputTokens",
               "reasoningOutputTokens",
               "totalTokens",
-            ].map((field) => (typeof total[field] === "number" ? total[field] : null)),
+            ].map((field) =>
+              typeof total[field] === "number" ? total[field] : null,
+            ),
           );
           if (totalFingerprint === previousUsageTotal) break;
           previousUsageTotal = totalFingerprint;
 
           const usage = asRecord(tokenUsage.last);
-          const inputTokens = typeof usage.inputTokens === "number" ? usage.inputTokens : undefined;
-          const outputTokens = typeof usage.outputTokens === "number" ? usage.outputTokens : undefined;
+          const inputTokens =
+            typeof usage.inputTokens === "number"
+              ? usage.inputTokens
+              : undefined;
+          const outputTokens =
+            typeof usage.outputTokens === "number"
+              ? usage.outputTokens
+              : undefined;
           const cachedInputTokens =
-            typeof usage.cachedInputTokens === "number" ? usage.cachedInputTokens : undefined;
+            typeof usage.cachedInputTokens === "number"
+              ? usage.cachedInputTokens
+              : undefined;
           const cacheWriteInputTokens =
-            typeof usage.cacheWriteInputTokens === "number" ? usage.cacheWriteInputTokens : undefined;
+            typeof usage.cacheWriteInputTokens === "number"
+              ? usage.cacheWriteInputTokens
+              : undefined;
           const hasRequestUsage =
             inputTokens !== undefined ||
             outputTokens !== undefined ||
@@ -476,6 +569,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             cacheWriteInputTokens !== undefined;
           if (!hasRequestUsage) {
             costEstimateKnown = false;
+            queue.push({ kind: "usage", costUsd: null });
             break;
           }
 
@@ -499,7 +593,8 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             kind: "usage",
             tokensIn: accumulatedInputTokens,
             tokensOut: accumulatedOutputTokens,
-            ...(costEstimateKnown ? { costUsd: accumulatedCostUsd, costEstimated: true } : {}),
+            costUsd: costEstimateKnown ? accumulatedCostUsd : null,
+            ...(costEstimateKnown ? { costEstimated: true } : {}),
           });
           break;
         }
@@ -521,12 +616,18 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       toolName: string,
       input: Json,
     ): Promise<ApprovalDecision> => {
-      const decision = await ctx.requestApproval({
-        runId: req.runId,
-        seq: req.seq,
-        toolName,
-        input,
-      });
+      pauseIdle();
+      let decision: ApprovalDecision;
+      try {
+        decision = await ctx.requestApproval({
+          runId: req.runId,
+          seq: req.seq,
+          toolName,
+          input,
+        });
+      } finally {
+        resumeIdle();
+      }
       if (decision.behavior === "deny") {
         queue.push({
           kind: "denied",
@@ -548,7 +649,11 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       return { behavior: "deny" };
     };
 
-    const decideFileChange = async (paths: string[], grantRoot: unknown, input: Json) => {
+    const decideFileChange = async (
+      paths: string[],
+      grantRoot: unknown,
+      input: Json,
+    ) => {
       if (req.readOnly) return denyReadOnly("edit");
       const confined =
         paths.length > 0 &&
@@ -565,47 +670,60 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       return bridgeApproval("edit", input);
     };
 
-    const onServerRequest = async (method: string, rawParams: unknown): Promise<unknown> => {
+    const onServerRequest = async (
+      method: string,
+      rawParams: unknown,
+    ): Promise<unknown> => {
       const params = asRecord(rawParams);
       switch (method) {
         // --- current (v2) approval family --------------------------------
         case "item/commandExecution/requestApproval": {
-          const item = typeof params.itemId === "string" ? itemsById.get(params.itemId) : undefined;
-          const decision =
-            req.readOnly
-              ? denyReadOnly("command")
-              : req.approvalMode === "auto" || req.approvalMode === "bypass"
-                ? ({ behavior: "allow" } as ApprovalDecision)
-                : await bridgeApproval("command", {
-                    command: (params.command ?? item?.command ?? null) as Json,
-                    cwd: (params.cwd ?? item?.cwd ?? null) as Json,
-                    reason: (params.reason ?? null) as Json,
-                  });
-          return { decision: decision.behavior === "allow" ? "accept" : "decline" };
+          const item =
+            typeof params.itemId === "string"
+              ? itemsById.get(params.itemId)
+              : undefined;
+          const decision = req.readOnly
+            ? denyReadOnly("command")
+            : req.approvalMode === "auto" || req.approvalMode === "bypass"
+              ? ({ behavior: "allow" } as ApprovalDecision)
+              : await bridgeApproval("command", {
+                  command: (params.command ?? item?.command ?? null) as Json,
+                  cwd: (params.cwd ?? item?.cwd ?? null) as Json,
+                  reason: (params.reason ?? null) as Json,
+                });
+          return {
+            decision: decision.behavior === "allow" ? "accept" : "decline",
+          };
         }
         case "item/fileChange/requestApproval": {
-          const item = typeof params.itemId === "string" ? itemsById.get(params.itemId) : undefined;
+          const item =
+            typeof params.itemId === "string"
+              ? itemsById.get(params.itemId)
+              : undefined;
           const paths = changedPaths(item?.changes);
           const decision = await decideFileChange(paths, params.grantRoot, {
             changes: (item?.changes ?? null) as Json,
             paths,
             reason: (params.reason ?? null) as Json,
           });
-          return { decision: decision.behavior === "allow" ? "accept" : "decline" };
+          return {
+            decision: decision.behavior === "allow" ? "accept" : "decline",
+          };
         }
         // --- legacy approval family (older servers) ----------------------
         case "execCommandApproval": {
-          const decision =
-            req.readOnly
-              ? denyReadOnly("command")
-              : req.approvalMode === "auto" || req.approvalMode === "bypass"
-                ? ({ behavior: "allow" } as ApprovalDecision)
-                : await bridgeApproval("command", {
-                    command: (params.command ?? null) as Json,
-                    cwd: (params.cwd ?? null) as Json,
-                    reason: (params.reason ?? null) as Json,
-                  });
-          return { decision: decision.behavior === "allow" ? "approved" : "denied" };
+          const decision = req.readOnly
+            ? denyReadOnly("command")
+            : req.approvalMode === "auto" || req.approvalMode === "bypass"
+              ? ({ behavior: "allow" } as ApprovalDecision)
+              : await bridgeApproval("command", {
+                  command: (params.command ?? null) as Json,
+                  cwd: (params.cwd ?? null) as Json,
+                  reason: (params.reason ?? null) as Json,
+                });
+          return {
+            decision: decision.behavior === "allow" ? "approved" : "denied",
+          };
         }
         case "applyPatchApproval": {
           const paths = changedPaths(params.fileChanges);
@@ -614,21 +732,29 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             paths,
             reason: (params.reason ?? null) as Json,
           });
-          return { decision: decision.behavior === "allow" ? "approved" : "denied" };
+          return {
+            decision: decision.behavior === "allow" ? "approved" : "denied",
+          };
         }
         default:
           throw new Error(`unsupported server request: ${method}`);
       }
     };
 
-    const rpc = new JsonRpcClient(proc, { onNotification, onServerRequest, log: ctx.log });
+    const rpc = new JsonRpcClient(proc, {
+      onNotification,
+      onServerRequest,
+      log: ctx.log,
+    });
 
     // Cancellation: best-effort turn/interrupt, then kill.
     let aborted = false;
     const onAbort = (): void => {
       aborted = true;
       if (threadId && turnId) {
-        rpc.request("turn/interrupt", { threadId, turnId }).catch(() => undefined);
+        rpc
+          .request("turn/interrupt", { threadId, turnId })
+          .catch(() => undefined);
       }
       setTimeout(() => proc.kill(), interruptGraceMs).unref?.();
     };
@@ -636,7 +762,10 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     else ctx.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      await rpc.request("initialize", { clientInfo, capabilities: initializeCapabilities });
+      await rpc.request("initialize", {
+        clientInfo,
+        capabilities: initializeCapabilities,
+      });
       rpc.notify("initialized", {});
 
       const developerInstructions = req.system.trim() || undefined;
@@ -674,7 +803,8 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       queue.push({
         kind: "model",
         model: resolvedModel,
-        reasoningEffort: req.reasoningEffort ?? threadResult.reasoningEffort ?? undefined,
+        reasoningEffort:
+          req.reasoningEffort ?? threadResult.reasoningEffort ?? undefined,
       });
       queue.push({ kind: "session", sessionId: threadId });
 
@@ -683,7 +813,9 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         input: [{ type: "text", text: req.prompt }],
         ...(req.model ? { model: req.model } : {}),
         ...(req.reasoningEffort ? { effort: req.reasoningEffort } : {}),
-        ...(req.schema !== undefined ? { outputSchema: normalizeSchema(req.schema) } : {}),
+        ...(req.schema !== undefined
+          ? { outputSchema: normalizeSchema(req.schema) }
+          : {}),
       });
       turnId = turnStarted.turn?.id;
 
@@ -722,7 +854,10 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             });
             return;
           }
-          queue.push({ kind: "result", output: restoreOptionalNulls(output, req.schema) });
+          queue.push({
+            kind: "result",
+            output: restoreOptionalNulls(output, req.schema),
+          });
         } else {
           queue.push({ kind: "result", output: { text: message } });
         }
@@ -739,13 +874,18 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       queue.push({ kind: "error", message: String(err) });
     } finally {
       ctx.signal.removeEventListener("abort", onAbort);
-      if (idleTimer) clearTimeout(idleTimer);
+      clearIdle();
       proc.kill();
       queue.end();
     }
   }
 
-  return { name: "codex", discover, invoke, lintOutputSchema: lintStrictOutputSchema };
+  return {
+    name: "codex",
+    discover,
+    invoke,
+    lintOutputSchema: lintStrictOutputSchema,
+  };
 }
 
 /** Default codex harness bound to the real `codex app-server` binary. */

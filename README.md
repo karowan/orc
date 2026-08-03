@@ -118,7 +118,9 @@ registers **custom** harnesses (package or NDJSON executable) and **runtime
 extensions** (`defineLeaf(...)` — journaled leaf kinds callable as `ext.name()`).
 An extension's optional `present.input` and `present.output` callbacks can
 project safe fields, document snapshots, and run-header badges without
-persisting its raw payload.
+persisting its raw payload. Long-lived wait extensions can set
+`idleTimeout: false` (or an extension-specific millisecond limit) without
+changing the run-level watchdog used by agents and other leaves.
 There is deliberately no ambient plugin scanning.
 
 ## Development

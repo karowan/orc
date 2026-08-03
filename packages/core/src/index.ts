@@ -8,3 +8,4 @@ export * from "./supervisor.js";
 export * from "./config.js";
 export * from "./cost.js";
 export * from "./jsonschema.js";
+export * from "./program-meta.js";

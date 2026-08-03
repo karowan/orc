@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { JournalRecord } from "@karowanorg/orc-core";
+import type { JournalRecord, TraceRecord } from "@karowanorg/orc-core";
 import { projectStatus } from "@karowanorg/orc-core";
 import { renderLivePage, renderReportHtml } from "../src/index.js";
 import { makeJournal, makeManifest, makeTraces } from "./fixtures.js";
@@ -10,7 +10,13 @@ function fixture(opts: { settled?: boolean } = {}) {
   const journal = makeJournal();
   const traces = makeTraces(runId);
   if (opts.settled) {
-    journal.push({ t: "done", seq: 2, status: "ok", resultSha: "sha2", attempt: 1 });
+    journal.push({
+      t: "done",
+      seq: 2,
+      status: "ok",
+      resultSha: "sha2",
+      attempt: 1,
+    });
     journal.push({ t: "finish", status: "completed", resultSha: "shafinal" });
   }
   const status = projectStatus(manifest, journal, traces);
@@ -18,6 +24,123 @@ function fixture(opts: { settled?: boolean } = {}) {
 }
 
 describe("renderReportHtml (responsive design)", () => {
+  it("pre-renders the declared graph, including gates, branches, and loop edges", () => {
+    const { manifest, status, traces } = fixture();
+    const graph: TraceRecord = {
+      t: "program-meta",
+      atMs: 1,
+      meta: {
+        graph: {
+          nodes: [
+            { id: "plan", title: "Plan" },
+            { id: "build", title: "Build" },
+            { id: "review", title: "Human review", kind: "gate" },
+            { id: "publish", title: "Publish" },
+          ],
+          edges: [
+            { from: "plan", to: "build" },
+            { from: "build", to: "review" },
+            {
+              from: "review",
+              to: "build",
+              kind: "loop",
+              label: "Changes requested",
+            },
+            { from: "review", to: "publish", label: "Approved" },
+          ],
+        },
+      },
+    };
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces: [graph, ...traces],
+      live: true,
+    });
+
+    expect(html).toContain('class="run-graph"');
+    expect(html).toContain('data-phase="plan"');
+    expect(html).toContain('data-phase="publish"');
+    expect(html).toContain("Human review");
+    expect(html).toContain("GATE · PENDING");
+    expect(html).toContain('class="rg-edge loop"');
+    expect(html).toContain("Changes requested");
+    expect(html).toContain("Approved");
+  });
+
+  it("merges repeated phase visits into one detail card and marks untouched terminal nodes skipped", () => {
+    const { manifest, traces } = fixture({ settled: true });
+    const journal = makeJournal();
+    journal.push(
+      {
+        t: "call",
+        seq: 4,
+        kind: "agent",
+        id: "plan-again",
+        phase: "plan",
+        readOnly: true,
+        specDigest: "d4",
+      },
+      { t: "done", seq: 4, status: "ok", resultSha: "sha4", attempt: 1 },
+      { t: "done", seq: 2, status: "ok", resultSha: "sha2", attempt: 1 },
+      { t: "finish", status: "completed", resultSha: "shafinal" },
+    );
+    traces.push({
+      t: "leaf",
+      seq: 4,
+      attempt: 1,
+      rev: 1,
+      status: "ok",
+      id: "plan-again",
+      phase: "plan",
+      kind: "agent",
+      readOnly: true,
+      startMs: 1_700_000_020_000,
+      endMs: 1_700_000_021_000,
+    });
+    traces.unshift({
+      t: "program-meta",
+      atMs: 1,
+      meta: {
+        graph: {
+          nodes: [
+            { id: "plan", title: "Plan" },
+            { id: "build", title: "Build" },
+            { id: "publish", title: "Publish" },
+          ],
+          edges: [
+            { from: "plan", to: "build" },
+            { from: "build", to: "publish" },
+          ],
+        },
+      },
+    });
+    traces.push(
+      {
+        t: "event",
+        atMs: 2,
+        event: { kind: "phase", name: "plan", state: "started", scope: 2 },
+      },
+      {
+        t: "event",
+        atMs: 3,
+        event: { kind: "phase", name: "plan", state: "completed", scope: 2 },
+      },
+    );
+    const status = projectStatus(manifest, journal, traces);
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      journal,
+      live: false,
+    });
+
+    expect(html.match(/data-key="phase-plan"/g) ?? []).toHaveLength(1);
+    expect(html).toContain("PASS 2");
+    expect(html).toMatch(/class="rg-node skipped" data-phase="publish"/);
+  });
+
   it("renders the glance header: run id, name, state chip, stat tiles, gate counter", () => {
     const { manifest, status, traces } = fixture();
     const html = renderReportHtml({ manifest, status, traces, live: true });
@@ -29,10 +152,14 @@ describe("renderReportHtml (responsive design)", () => {
     expect(html).toContain("granted"); // writes granted
     expect(html).toContain("started ");
     // stat tiles: leaves done/total, elapsed, cost, gates
-    expect(html).toMatch(/class="g-nv tnum">2\/3<\/span><span class="g-nk">leaves/);
+    expect(html).toMatch(
+      /class="g-nv tnum">2\/3<\/span><span class="g-nk">leaves/,
+    );
     expect(html).toMatch(/data-elapsed-start="\d+"/);
     expect(html).toContain('class="g-nk">elapsed');
-    expect(html).toMatch(/class="g-nv tnum gated">1<\/span><span class="g-nk">gates/);
+    expect(html).toMatch(
+      /class="g-nv tnum gated">1<\/span><span class="g-nk">gates/,
+    );
     // the banner is gone; a compact gate COUNTER lives in the header
     expect(html).toContain('class="gate-count">1 GATE<');
     expect(html).not.toContain("pending approval"); // old banner copy removed
@@ -97,7 +224,8 @@ describe("renderReportHtml (responsive design)", () => {
     const completed = traces.find(
       (trace) => trace.t === "leaf" && trace.seq === 1 && trace.status === "ok",
     );
-    if (!completed || completed.t !== "leaf") throw new Error("missing completed leaf");
+    if (!completed || completed.t !== "leaf")
+      throw new Error("missing completed leaf");
     completed.presentation = {
       live: {
         title: "Live workflow state",
@@ -129,9 +257,14 @@ describe("renderReportHtml (responsive design)", () => {
       },
     };
     const approvalEvent = traces.find(
-      (trace) => trace.t === "event" && trace.event.kind === "approval-requested",
+      (trace) =>
+        trace.t === "event" && trace.event.kind === "approval-requested",
     );
-    if (!approvalEvent || approvalEvent.t !== "event" || approvalEvent.event.kind !== "approval-requested") {
+    if (
+      !approvalEvent ||
+      approvalEvent.t !== "event" ||
+      approvalEvent.event.kind !== "approval-requested"
+    ) {
       throw new Error("missing approval");
     }
     approvalEvent.event.approval.presentation = {
@@ -166,7 +299,13 @@ describe("renderReportHtml (responsive design)", () => {
     expect(gate).toContain("orcChooseAction");
     expect(gate).toContain("<textarea>");
 
-    const report = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 2 });
+    const report = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      live: false,
+      selectedSeq: 2,
+    });
     expect(report).toContain("Requirements approval");
     expect(report).toContain("respond with <b>orc approvals</b>");
     expect(report).not.toContain("orcChooseAction");
@@ -175,7 +314,13 @@ describe("renderReportHtml (responsive design)", () => {
   it("escapes HTML in prompts and never emits script tags in the static report", () => {
     const { manifest, status, traces } = fixture();
     // Select the leaf whose prompt carries the XSS payload so it renders in the detail view.
-    const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      live: false,
+      selectedSeq: 1,
+    });
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>");
@@ -187,14 +332,24 @@ describe("renderReportHtml (responsive design)", () => {
     expect(html).toContain("agent#1");
     expect(html).toContain("agent#2");
     expect(html).toContain("agent#3");
-    expect(html).toMatch(/class="bar ok" data-s="\d+" data-e="\d*" style="left:[\d.]+%;width:[\d.]+%"/);
-    expect(html).toMatch(/class="bar error" data-s="\d+" data-e="\d*" style="left:[\d.]+%;width:[\d.]+%"/);
-    expect(html).toMatch(/class="waterfall" data-range-start="\d+" data-running="1"/);
+    expect(html).toMatch(
+      /class="bar ok" data-s="\d+" data-e="\d*" style="left:[\d.]+%;width:[\d.]+%"/,
+    );
+    expect(html).toMatch(
+      /class="bar error" data-s="\d+" data-e="\d*" style="left:[\d.]+%;width:[\d.]+%"/,
+    );
+    expect(html).toMatch(
+      /class="waterfall" data-range-start="\d+" data-running="1"/,
+    );
     // collapsible phase cards with done/total counters
     expect(html).toContain('data-key="phase-plan"');
     expect(html).toContain('data-key="phase-build"');
-    expect(html).toMatch(/class="c-pn">plan<\/span><span class="c-pc tnum">1\/1</);
-    expect(html).toMatch(/class="c-pn">build<\/span><span class="c-pc tnum">1\/2</);
+    expect(html).toMatch(
+      /class="c-pn">plan<\/span><span class="c-pc tnum">1\/1</,
+    );
+    expect(html).toMatch(
+      /class="c-pn">build<\/span><span class="c-pc tnum">1\/2</,
+    );
     expect(html).toContain('class="chev"');
     // model shown in the row (shortened form) + effort pill
     expect(html).toContain("fable-5");
@@ -217,20 +372,102 @@ describe("renderReportHtml (responsive design)", () => {
   it("uses durable spend from every retry attempt without double-counting revisions", () => {
     const { manifest, status, traces } = fixture();
     const journal: JournalRecord[] = [
-      { t: "cost", seq: 1, attempt: 1, costUsd: 0.1234, costEstimated: false, atMs: 1 },
-      { t: "cost", seq: 1, attempt: 2, costUsd: 0.1, costEstimated: false, atMs: 2 },
-      { t: "cost", seq: 1, attempt: 2, costUsd: 0.25, costEstimated: false, atMs: 3 },
-      { t: "cost", seq: 3, attempt: 1, costUsd: 0.0075, costEstimated: true, atMs: 4 },
+      {
+        t: "cost",
+        seq: 1,
+        attempt: 1,
+        costUsd: 0.1234,
+        costEstimated: false,
+        atMs: 1,
+      },
+      {
+        t: "cost",
+        seq: 1,
+        attempt: 2,
+        costUsd: 0.1,
+        costEstimated: false,
+        atMs: 2,
+      },
+      {
+        t: "cost",
+        seq: 1,
+        attempt: 2,
+        costUsd: 0.25,
+        costEstimated: false,
+        atMs: 3,
+      },
+      {
+        t: "cost",
+        seq: 3,
+        attempt: 1,
+        costUsd: 0.0075,
+        costEstimated: true,
+        atMs: 4,
+      },
     ];
-    const html = renderReportHtml({ manifest, status, traces, journal, live: true });
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      journal,
+      live: true,
+    });
     // attempt 1 ($0.1234) + latest durable attempt 2 cost ($0.25) +
     // estimated failed leaf ($0.0075) = $0.3809.
     expect(html).toContain(">~$0.38</span>");
   });
 
+  it("renders unavailable instead of a stale partial total", () => {
+    const { manifest, status, traces } = fixture();
+    const journal: JournalRecord[] = [
+      {
+        t: "cost",
+        seq: 1,
+        attempt: 1,
+        costUsd: 0.1234,
+        costEstimated: false,
+        atMs: 1,
+      },
+      {
+        t: "cost",
+        seq: 1,
+        attempt: 1,
+        costUsd: null,
+        atMs: 2,
+      },
+    ];
+    const unavailableTraces = traces.map((trace) =>
+      trace.t === "leaf" && trace.seq === 1
+        ? {
+            ...trace,
+            costUsd: null,
+            costEstimated: undefined,
+          }
+        : trace,
+    );
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces: unavailableTraces,
+      journal,
+      live: false,
+      selectedSeq: 1,
+    });
+
+    expect(html).toContain(">unavailable</span>");
+    expect(html).not.toContain(">~$0.13</span>");
+    expect(html).toContain("cost unavailable");
+  });
+
   it("surfaces a leaf's full record through the detail view (output, tools, usage)", () => {
     const { manifest, status, traces } = fixture();
-    const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      live: false,
+      selectedSeq: 1,
+    });
     expect(html).toContain('class="detail"');
     expect(html).toContain('class="d-back"'); // back header (mobile) / drawer top (desktop)
     expect(html).toContain('class="dw-scroll"'); // detail body scrolls itself
@@ -247,7 +484,13 @@ describe("renderReportHtml (responsive design)", () => {
 
   it("shows a failed leaf's error and estimated cost in its detail view", () => {
     const { manifest, status, traces } = fixture();
-    const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 3 });
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      live: false,
+      selectedSeq: 3,
+    });
     expect(html).toContain("leaf exploded"); // error
     expect(html).toContain("~$0.01"); // codex estimated
   });
@@ -258,9 +501,17 @@ describe("renderReportHtml (responsive design)", () => {
     const noDetail = renderReportHtml({ manifest, status, traces, live: true });
     expect(noDetail).not.toContain("cache TTL");
     // With the leaf selected, they appear once (deduped ×2), collapsed by default.
-    const withDetail = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
+    const withDetail = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      live: false,
+      selectedSeq: 1,
+    });
     expect(withDetail).toContain('<details class="hlog" data-key="hlog-1">');
-    expect(withDetail).not.toContain('<details class="hlog" data-key="hlog-1" open');
+    expect(withDetail).not.toContain(
+      '<details class="hlog" data-key="hlog-1" open',
+    );
     expect(withDetail).toContain("Harness log");
     expect(withDetail).toContain("3 lines · 1 dup");
     const dedup = withDetail.split("failed to renew cache TTL").length - 1;
@@ -271,22 +522,47 @@ describe("renderReportHtml (responsive design)", () => {
   it("detail shows newest 4 tool calls, older ones collapsed, output boxed+capped", () => {
     const { manifest, status, traces } = fixture();
     // Give leaf 1 seven tool calls: t1..t7, t7 newest.
-    const leaf = traces.find((t) => t.t === "leaf" && t.seq === 1 && t.rev === 1) as { toolCalls: unknown[] };
+    const leaf = traces.find(
+      (t) => t.t === "leaf" && t.seq === 1 && t.rev === 1,
+    ) as { toolCalls: unknown[] };
     leaf.toolCalls = Array.from({ length: 7 }, (_, i) => ({
-      id: `t${i + 1}`, name: `Tool${i + 1}`, input: { n: i + 1 }, result: "ok", status: "ok",
-      startMs: 1_700_000_000_000 + i * 1000, endMs: 1_700_000_000_000 + i * 1000 + 100,
+      id: `t${i + 1}`,
+      name: `Tool${i + 1}`,
+      input: { n: i + 1 },
+      result: "ok",
+      status: "ok",
+      startMs: 1_700_000_000_000 + i * 1000,
+      endMs: 1_700_000_000_000 + i * 1000 + 100,
     }));
-    const html = renderReportHtml({ manifest, status, traces, live: false, selectedSeq: 1 });
+    const html = renderReportHtml({
+      manifest,
+      status,
+      traces,
+      live: false,
+      selectedSeq: 1,
+    });
     // Newest first: t7 appears before t6 in the visible list.
-    expect(html.indexOf('data-key="tool-t7"')).toBeLessThan(html.indexOf('data-key="tool-t6"'));
+    expect(html.indexOf('data-key="tool-t7"')).toBeLessThan(
+      html.indexOf('data-key="tool-t6"'),
+    );
     // The three oldest are behind the collapsed expander.
     expect(html).toContain("3 earlier calls");
-    expect(html.indexOf("3 earlier calls")).toBeLessThan(html.indexOf('data-key="tool-t3"'));
+    expect(html.indexOf("3 earlier calls")).toBeLessThan(
+      html.indexOf('data-key="tool-t3"'),
+    );
     // Output is a capped box even for string outputs (rendered raw, not JSON-quoted).
     const strTraces = traces.map((t) =>
-      t.t === "leaf" && t.seq === 1 && t.rev === 1 ? { ...t, output: "a plain text answer" } : t,
+      t.t === "leaf" && t.seq === 1 && t.rev === 1
+        ? { ...t, output: "a plain text answer" }
+        : t,
     );
-    const strHtml = renderReportHtml({ manifest, status, traces: strTraces, live: false, selectedSeq: 1 });
+    const strHtml = renderReportHtml({
+      manifest,
+      status,
+      traces: strTraces,
+      live: false,
+      selectedSeq: 1,
+    });
     expect(strHtml).toContain('class="box capped">a plain text answer');
     expect(strHtml).not.toContain("&quot;a plain text answer&quot;");
   });

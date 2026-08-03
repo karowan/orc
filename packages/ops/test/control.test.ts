@@ -4,8 +4,10 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireLock,
+  openApprovals,
   prepareRun,
   readControl,
+  readTraces,
   runPaths,
   type JournalRecord,
   type Registry,
@@ -203,6 +205,82 @@ describe("control operations", () => {
 });
 
 describe("detached resume preflight", () => {
+  it("refreshes the durable report after a fast program reaches a gate", async () => {
+    const configDir = path.join(home, "config");
+    fs.mkdirSync(configDir);
+    fs.writeFileSync(
+      path.join(configDir, "orc.config.mjs"),
+      `export default {
+  extensions: [{
+    name: "wait_for_approval",
+    readOnly: true,
+    async execute(_input, context) {
+      return context.requestApproval({
+        runId: "",
+        seq: 0,
+        toolName: "Gate",
+        input: {}
+      });
+    }
+  }]
+};
+`,
+    );
+    const programPath = path.join(home, "gate.orc.ts");
+    fs.writeFileSync(
+      programPath,
+      `export const meta = {
+  graph: { nodes: [{ id: "gate", title: "Human gate", kind: "gate" }], edges: [] }
+};
+export default async ({ ext, phase }) =>
+  phase("gate", () => ext.wait_for_approval({}));
+`,
+    );
+    const built = await buildRegistry({ cwd: configDir });
+    const manifest = await prepareRun(
+      { programPath, cwd: home, brief: "durable report gate test" },
+      built,
+    );
+    const child = runSupervisorChild(manifest.runId, configDir, async () => undefined);
+
+    try {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (openApprovals(readTraces(manifest.runId)).length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const approval = openApprovals(readTraces(manifest.runId))[0];
+      if (!approval) throw new Error("approval did not open");
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+      const report = fs.readFileSync(runPaths(manifest.runId).report, "utf8");
+      expect(report).toContain('data-phase="gate"');
+      expect(report).toContain("GATE · WAITING");
+
+      await respondApproval.handler(
+        {
+          runId: manifest.runId,
+          approvalId: approval.id,
+          behavior: "allow",
+        },
+        { registry: built },
+      );
+      await child;
+    } finally {
+      const approval = openApprovals(readTraces(manifest.runId))[0];
+      if (approval) {
+        await respondApproval.handler(
+          {
+            runId: manifest.runId,
+            approvalId: approval.id,
+            behavior: "deny",
+          },
+          { registry: built },
+        );
+      }
+      await child.catch(() => undefined);
+    }
+  });
+
   it("signals startup before a synchronous extension can block dispatch", async () => {
     const configDir = path.join(home, "config");
     fs.mkdirSync(configDir);

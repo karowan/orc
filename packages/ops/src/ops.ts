@@ -169,6 +169,7 @@ export const validate = defineOp({
         },
         onLog: () => undefined,
         onPhase: () => undefined,
+        onProgramMeta: () => undefined,
       });
       const state = vm.state();
       if (state.state === "error") problems.push(`program failed before its first call: ${state.error}`);

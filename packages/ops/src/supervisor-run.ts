@@ -26,7 +26,16 @@ export async function runSupervisorChild(
   startupSignal = signalStartup,
 ): Promise<void> {
   let lastReportAt = 0;
+  let reportTimer: NodeJS.Timeout | undefined;
   let startupSignaled = false;
+  const writeLatestReport = (id: string) => {
+    lastReportAt = Date.now();
+    try {
+      writeReport(id);
+    } catch {
+      /* best-effort */
+    }
+  };
   const onReady = () => {
     if (!startupSignaled) {
       startupSignaled = true;
@@ -34,12 +43,17 @@ export async function runSupervisorChild(
     }
   };
   const onUpdate = (id: string) => {
-    if (Date.now() - lastReportAt <= 1_000) return;
-    lastReportAt = Date.now();
-    try {
-      writeReport(id);
-    } catch {
-      /* best-effort */
+    const elapsed = Date.now() - lastReportAt;
+    if (elapsed > 1_000) {
+      if (reportTimer) clearTimeout(reportTimer);
+      reportTimer = undefined;
+      writeLatestReport(id);
+    } else if (!reportTimer) {
+      reportTimer = setTimeout(() => {
+        reportTimer = undefined;
+        writeLatestReport(id);
+      }, 1_001 - elapsed);
+      reportTimer.unref();
     }
   };
   try {

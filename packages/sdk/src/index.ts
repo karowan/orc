@@ -79,8 +79,13 @@ export class OrcRun {
             presentation: approval.presentation,
             actions: approval.actions,
             respond: async (d) => {
+              const input = respondOp.input.parse({
+                ...d,
+                runId: this.runId,
+                approvalId: approval.id,
+              });
               await respondOp.handler(
-                { runId: this.runId, approvalId: approval.id, ...d },
+                input,
                 ctx,
               );
             },
@@ -172,7 +177,7 @@ export class Orc {
   ): Promise<void> {
     const ctx = await this.ctx();
     await respondOp.handler(
-      respondOp.input.parse({ runId, approvalId, ...decision }),
+      respondOp.input.parse({ ...decision, runId, approvalId }),
       ctx,
     );
   }

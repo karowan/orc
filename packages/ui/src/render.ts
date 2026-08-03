@@ -20,6 +20,9 @@ import type {
   JournalRecord,
   LeafStatus,
   LeafTraceRecord,
+  ProgramGraphEdge,
+  ProgramGraphNode,
+  ProgramMeta,
   RunEventRecord,
   RunManifest,
   RunStatus,
@@ -27,7 +30,7 @@ import type {
   TraceRecord,
   UiPresentation,
 } from "@karowanorg/orc-core";
-import { latestLeafTraces, openApprovals } from "@karowanorg/orc-core";
+import { latestLeafTraces, openApprovals, programMetaFromTraces } from "@karowanorg/orc-core";
 
 // ---------------------------------------------------------------------------
 // Escaping + formatting
@@ -172,6 +175,23 @@ button{font-family:inherit}
 .g-badge.success{color:var(--green);border-color:var(--green-b)}
 .g-badge.warning{color:var(--amber);border-color:var(--amber-b)}
 .g-badge.danger{color:var(--red);border-color:var(--red-b)}
+
+.run-graph{overflow-x:auto;padding:4px 0 14px;margin-bottom:10px;border-bottom:1px solid var(--hair)}
+.run-graph svg{display:block;margin:0 auto}
+.rg-edge{fill:none;stroke:var(--faint);stroke-width:1.25}
+.rg-edge.loop{stroke:var(--amber);stroke-dasharray:4 4}
+.rg-edge-label{fill:var(--muted);font-size:9px}
+.rg-node rect{fill:var(--bg);stroke:var(--border);stroke-width:1.25}
+.rg-node .rg-title{fill:var(--bright);font-size:11px;font-weight:700}
+.rg-node .rg-state{fill:var(--muted);font-size:8.5px;letter-spacing:.08em}
+.rg-node.running rect,.rg-node.waiting rect{stroke:var(--amber);stroke-width:2}
+.rg-node.running .rg-state,.rg-node.waiting .rg-state{fill:var(--amber)}
+.rg-node.completed rect{stroke:var(--green-b)}
+.rg-node.completed .rg-state{fill:var(--green)}
+.rg-node.failed rect{stroke:var(--red);stroke-width:2}
+.rg-node.failed .rg-state{fill:var(--red)}
+.rg-node.skipped{opacity:.48}
+.rg-node.unplanned rect{stroke-dasharray:4 3}
 
 .mbody{flex:1;display:flex;align-items:stretch;min-height:0}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
@@ -396,9 +416,13 @@ interface CostRollup {
   anyEstimated: boolean;
   anyExact: boolean;
   present: boolean;
+  unavailable: boolean;
 }
 function rollupCost(traces: TraceRecord[], journal: JournalRecord[] = []): CostRollup {
-  const attempts = new Map<string, { costUsd: number; costEstimated: boolean; rev?: number }>();
+  const attempts = new Map<
+    string,
+    { costUsd: number | null; costEstimated: boolean; rev?: number }
+  >();
   for (const trace of traces) {
     if (trace.t !== "leaf" || trace.costUsd === undefined) continue;
     const key = `${trace.seq}:${trace.attempt}`;
@@ -415,7 +439,7 @@ function rollupCost(traces: TraceRecord[], journal: JournalRecord[] = []): CostR
     if (record.t === "cost") {
       attempts.set(`${record.seq}:${record.attempt}`, {
         costUsd: record.costUsd,
-        costEstimated: record.costEstimated,
+        costEstimated: record.costEstimated ?? false,
       });
     }
   }
@@ -423,13 +447,18 @@ function rollupCost(traces: TraceRecord[], journal: JournalRecord[] = []): CostR
   let anyEstimated = false;
   let anyExact = false;
   let present = false;
+  let unavailable = false;
   for (const tr of attempts.values()) {
     present = true;
+    if (tr.costUsd === null) {
+      unavailable = true;
+      continue;
+    }
     total += tr.costUsd;
     if (tr.costEstimated) anyEstimated = true;
     else anyExact = true;
   }
-  return { total, anyEstimated, anyExact, present };
+  return { total, anyEstimated, anyExact, present, unavailable };
 }
 
 function latestRunBadges(
@@ -448,6 +477,218 @@ function latestRunBadges(
   return [...latest.values()];
 }
 
+type GraphNodeState = "pending" | "running" | "waiting" | "completed" | "failed" | "skipped";
+
+interface GraphNodeView {
+  node: ProgramGraphNode;
+  state: GraphNodeState;
+  visits: number;
+  unplanned: boolean;
+  x: number;
+  y: number;
+}
+
+function graphRuntime(
+  status: RunStatus,
+  traces: TraceRecord[],
+  gatesBySeq: Map<number, ApprovalRequest[]>,
+): Map<string, { state: GraphNodeState; visits: number }> {
+  const runtime = new Map<string, {
+    scopes: Map<string, "started" | "completed" | "failed">;
+  }>();
+  let legacy = 0;
+  for (const trace of traces) {
+    if (trace.t !== "event" || trace.event.kind !== "phase") continue;
+    const phase = runtime.get(trace.event.name) ?? { scopes: new Map() };
+    if (trace.event.scope === undefined || trace.event.state === undefined) {
+      phase.scopes.set(`legacy-${legacy++}`, "completed");
+    } else {
+      phase.scopes.set(String(trace.event.scope), trace.event.state);
+    }
+    runtime.set(trace.event.name, phase);
+  }
+
+  const phaseIds = new Set<string>(runtime.keys());
+  for (const leaf of status.leaves) if (leaf.phase) phaseIds.add(leaf.phase);
+  const result = new Map<string, { state: GraphNodeState; visits: number }>();
+  for (const phaseId of phaseIds) {
+    const phase = runtime.get(phaseId);
+    const leaves = status.leaves.filter((leaf) => leaf.phase === phaseId);
+    const gated = leaves.some((leaf) => (gatesBySeq.get(leaf.seq)?.length ?? 0) > 0);
+    const activeScopes = [...(phase?.scopes.values() ?? [])].filter((state) => state === "started").length;
+    const latestScope = phase ? [...phase.scopes.values()].at(-1) : undefined;
+    const visits = phase?.scopes.size ?? (leaves.length > 0 ? 1 : 0);
+    let state: GraphNodeState;
+    if (gated) state = "waiting";
+    else if (activeScopes > 0 || leaves.some((leaf) => leaf.status === "pending" || leaf.status === "running")) {
+      state = "running";
+    } else if (latestScope === "failed") state = "failed";
+    else if (visits > 0 || leaves.length > 0) state = "completed";
+    else state = status.state === "running" ? "pending" : "skipped";
+    result.set(phaseId, { state, visits });
+  }
+  return result;
+}
+
+function truncateLabel(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function graphRanks(nodes: ProgramGraphNode[], edges: ProgramGraphEdge[]): Map<string, number> {
+  const rank = new Map(nodes.map((node) => [node.id, 0]));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  for (const edge of edges) {
+    if (edge.kind === "loop" || !incoming.has(edge.from) || !incoming.has(edge.to)) continue;
+    incoming.set(edge.to, incoming.get(edge.to)! + 1);
+    outgoing.get(edge.from)!.push(edge.to);
+  }
+  const ready = nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id);
+  for (let cursor = 0; cursor < ready.length; cursor++) {
+    const id = ready[cursor];
+    for (const target of outgoing.get(id)!) {
+      rank.set(target, Math.max(rank.get(target)!, rank.get(id)! + 1));
+      const count = incoming.get(target)! - 1;
+      incoming.set(target, count);
+      if (count === 0) ready.push(target);
+    }
+  }
+  return rank;
+}
+
+function renderProgramGraph(
+  meta: ProgramMeta | undefined,
+  status: RunStatus,
+  traces: TraceRecord[],
+  gatesBySeq: Map<number, ApprovalRequest[]>,
+): string {
+  if (!meta) return "";
+  const runtime = graphRuntime(status, traces, gatesBySeq);
+  const projected = new Map(
+    (status.graph?.nodes ?? []).map((node) => [node.id, node]),
+  );
+  const declared = new Set(meta.graph.nodes.map((node) => node.id));
+  const unplannedIds: string[] = [];
+  const remember = (id: string | undefined): void => {
+    if (id && !declared.has(id) && !unplannedIds.includes(id)) unplannedIds.push(id);
+  };
+  for (const trace of traces) {
+    if (trace.t === "event" && trace.event.kind === "phase") remember(trace.event.name);
+  }
+  for (const leaf of status.leaves) remember(leaf.phase);
+
+  const nodes = [
+    ...meta.graph.nodes,
+    ...unplannedIds.map((id) => ({ id, title: id } satisfies ProgramGraphNode)),
+  ];
+  const ranks = graphRanks(meta.graph.nodes, meta.graph.edges);
+  const declaredMaxRank = Math.max(0, ...ranks.values());
+  for (const id of unplannedIds) ranks.set(id, declaredMaxRank + 1);
+  const rows = new Map<number, ProgramGraphNode[]>();
+  for (const node of nodes) {
+    const nodeRank = ranks.get(node.id) ?? 0;
+    const row = rows.get(nodeRank) ?? [];
+    row.push(node);
+    rows.set(nodeRank, row);
+  }
+
+  const NODE_W = 190;
+  const NODE_H = 48;
+  const COL_GAP = 28;
+  const ROW_GAP = 38;
+  const PAD_X = 24;
+  const PAD_Y = 18;
+  const loopEdges = meta.graph.edges.filter((edge) => edge.kind === "loop");
+  const maxColumns = Math.max(1, ...[...rows.values()].map((row) => row.length));
+  const contentWidth = PAD_X * 2 + maxColumns * NODE_W + Math.max(0, maxColumns - 1) * COL_GAP;
+  const loopMargin = loopEdges.length > 0 ? 210 : 0;
+  const width = Math.max(340, contentWidth + loopMargin);
+  const maxRank = Math.max(0, ...rows.keys());
+  const height = PAD_Y * 2 + (maxRank + 1) * NODE_H + maxRank * ROW_GAP;
+  const positions = new Map<string, GraphNodeView>();
+
+  for (const [nodeRank, row] of rows) {
+    const rowWidth = row.length * NODE_W + Math.max(0, row.length - 1) * COL_GAP;
+    const startX = PAD_X + (contentWidth - PAD_X * 2 - rowWidth) / 2;
+    row.forEach((node, index) => {
+      const observed = projected.get(node.id) ?? runtime.get(node.id);
+      positions.set(node.id, {
+        node,
+        state: observed?.state ?? (status.state === "running" ? "pending" : "skipped"),
+        visits: observed?.visits ?? 0,
+        unplanned: !declared.has(node.id),
+        x: startX + index * (NODE_W + COL_GAP),
+        y: PAD_Y + nodeRank * (NODE_H + ROW_GAP),
+      });
+    });
+  }
+
+  const normalEdges = meta.graph.edges
+    .filter((edge) => edge.kind !== "loop")
+    .map((edge) => {
+      const from = positions.get(edge.from);
+      const to = positions.get(edge.to);
+      if (!from || !to) return "";
+      const x1 = from.x + NODE_W / 2;
+      const y1 = from.y + NODE_H;
+      const x2 = to.x + NODE_W / 2;
+      const y2 = to.y;
+      const middle = (y1 + y2) / 2;
+      const path = `M ${x1} ${y1} C ${x1} ${middle}, ${x2} ${middle}, ${x2} ${y2}`;
+      const label = edge.label
+        ? `<text class="rg-edge-label" x="${Math.max(x1, x2) + 8}" y="${middle - 3}">${escapeHtml(truncateLabel(edge.label, 34))}</text>`
+        : "";
+      return `<path class="rg-edge" d="${path}" marker-end="url(#rg-arrow)"/>${label}`;
+    })
+    .join("");
+
+  const loops = loopEdges
+    .map((edge, index) => {
+      const from = positions.get(edge.from);
+      const to = positions.get(edge.to);
+      if (!from || !to) return "";
+      const x1 = from.x + NODE_W;
+      const y1 = from.y + NODE_H / 2;
+      const x2 = to.x + NODE_W;
+      const y2 = to.y + NODE_H / 2;
+      const loopX = contentWidth + 24 + index * 13;
+      const path = `M ${x1} ${y1} C ${loopX} ${y1}, ${loopX} ${y2}, ${x2} ${y2}`;
+      const label = edge.label
+        ? `<text class="rg-edge-label" x="${loopX + 7}" y="${(y1 + y2) / 2 - 3}">${escapeHtml(truncateLabel(edge.label, 30))}</text>`
+        : "";
+      return `<path class="rg-edge loop" d="${path}" marker-end="url(#rg-loop-arrow)"/>${label}`;
+    })
+    .join("");
+
+  const renderedNodes = [...positions.values()]
+    .map(({ node, state, visits, unplanned, x, y }) => {
+      const detail = [
+        node.kind === "gate" ? "GATE" : undefined,
+        node.kind === "terminal" ? "TERMINAL" : undefined,
+        state.toUpperCase(),
+        visits > 1 ? `PASS ${visits}` : undefined,
+        unplanned ? "UNPLANNED" : undefined,
+      ].filter(Boolean).join(" · ");
+      return `<g class="rg-node ${state}${unplanned ? " unplanned" : ""}" data-phase="${escapeHtml(node.id)}">
+<rect x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="4"/>
+<text class="rg-title" x="${x + 12}" y="${y + 20}">${escapeHtml(truncateLabel(node.title, 27))}</text>
+<text class="rg-state" x="${x + 12}" y="${y + 36}">${escapeHtml(detail)}</text>
+</g>`;
+    })
+    .join("");
+
+  return `<section class="run-graph" aria-label="Program graph">
+<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="rg-title">
+<title id="rg-title">Program graph and current execution state</title>
+<defs>
+<marker id="rg-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" fill="var(--faint)"/></marker>
+<marker id="rg-loop-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" fill="var(--amber)"/></marker>
+</defs>
+${normalEdges}${loops}${renderedNodes}
+</svg>
+</section>`;
+}
+
 export function renderRunBody(view: RunView): string {
   const { manifest, status, traces } = view;
   const nowMs = view.nowMs ?? Date.now();
@@ -460,6 +701,7 @@ export function renderRunBody(view: RunView): string {
     gatesBySeq.set(a.seq, arr);
   }
   const events = traces.filter((r): r is RunEventRecord => r.t === "event");
+  const meta = programMetaFromTraces(traces);
   const cost = rollupCost(traces, view.journal);
   const badges = latestRunBadges(detail);
 
@@ -474,7 +716,8 @@ ${renderGlance(manifest, status, gatesBySeq, cost, events, badges, view.interact
 <div class="mbody">
 <div class="main">
 <div class="scroll">
-${renderPhases(status, detail, gatesBySeq, view, nowMs)}
+${renderProgramGraph(meta, status, traces, gatesBySeq)}
+${renderPhases(status, detail, gatesBySeq, view, nowMs, meta)}
 </div>
 ${dock}
 </div>
@@ -488,7 +731,9 @@ ${detailPage}
 // ---------------------------------------------------------------------------
 /** The "~" prefix marks a total that includes estimated (rate-table) spend. */
 function costTile(cost: CostRollup, budgetUsd: number | undefined): { value: string; label: string } {
-  const value = `${cost.anyEstimated ? "~" : ""}$${cost.present ? cost.total.toFixed(2) : "0.00"}`;
+  const value = cost.unavailable
+    ? "unavailable"
+    : `${cost.anyEstimated ? "~" : ""}$${cost.present ? cost.total.toFixed(2) : "0.00"}`;
   const budget = budgetUsd !== undefined ? ` / $${budgetUsd.toFixed(2)}` : "";
   return { value, label: `cost${budget}` };
 }
@@ -500,7 +745,12 @@ function latestEventLine(events: RunEventRecord[]): { atMs: number; msg: string 
   let msg: string;
   switch (e.event.kind) {
     case "phase":
-      msg = `→ <b>${escapeHtml(e.event.name)}</b>`;
+      msg =
+        e.event.state === "completed"
+          ? `completed <b>${escapeHtml(e.event.name)}</b>`
+          : e.event.state === "failed"
+            ? `failed <b>${escapeHtml(e.event.name)}</b>`
+            : `→ <b>${escapeHtml(e.event.name)}</b>`;
       break;
     case "approval-requested":
       msg = `GATE <b>${escapeHtml(e.event.approval.toolName)}</b> · agent#${e.event.approval.seq}`;
@@ -608,21 +858,36 @@ function renderPhases(
   gatesBySeq: Map<number, ApprovalRequest[]>,
   view: RunView,
   nowMs: number,
+  meta?: ProgramMeta,
 ): string {
   const rangeStart = status.startedAtMs;
   const rangeEnd = Math.max(status.endedAtMs ?? nowMs, rangeStart + 1);
   const span = Math.max(rangeEnd - rangeStart, 1);
   const pct = (ms: number) => Math.min(Math.max(((ms - rangeStart) / span) * 100, 0), 100);
 
-  // group leaves by phase, preserving order
-  const groups: { phase: string | undefined; leaves: LeafStatus[] }[] = [];
+  // Repeated phase invocations share one card. Declared graph order wins;
+  // runtime-only phases are appended in first-call order.
+  const leavesByPhase = new Map<string | undefined, LeafStatus[]>();
   for (const leaf of status.leaves) {
-    const last = groups[groups.length - 1];
-    if (last && last.phase === leaf.phase) last.leaves.push(leaf);
-    else groups.push({ phase: leaf.phase, leaves: [leaf] });
+    const leaves = leavesByPhase.get(leaf.phase) ?? [];
+    leaves.push(leaf);
+    leavesByPhase.set(leaf.phase, leaves);
+  }
+  const titleByPhase = new Map(meta?.graph.nodes.map((node) => [node.id, node.title]) ?? []);
+  const groups: { phase: string | undefined; title?: string; leaves: LeafStatus[] }[] = [];
+  for (const node of meta?.graph.nodes ?? []) {
+    const leaves = leavesByPhase.get(node.id);
+    if (!leaves) continue;
+    groups.push({ phase: node.id, title: node.title, leaves });
+    leavesByPhase.delete(node.id);
+  }
+  for (const [phase, leaves] of leavesByPhase) {
+    groups.push({ phase, title: phase ? titleByPhase.get(phase) : undefined, leaves });
   }
 
-  const cards = groups.map((g) => renderPhaseCard(g.phase, g.leaves, detail, gatesBySeq, view, pct, nowMs));
+  const cards = groups.map((g) =>
+    renderPhaseCard(g.phase, g.title, g.leaves, detail, gatesBySeq, view, pct, nowMs),
+  );
   const content = cards.length ? cards.join("\n") : `<div class="empty">no calls yet</div>`;
   const anyRunning = status.leaves.some((l) => l.status === "running");
   return `<section class="waterfall" data-range-start="${rangeStart}" data-running="${anyRunning ? 1 : 0}">
@@ -632,6 +897,7 @@ ${content}
 
 function renderPhaseCard(
   phase: string | undefined,
+  title: string | undefined,
   leaves: LeafStatus[],
   detail: Map<number, LeafTraceRecord>,
   gatesBySeq: Map<number, ApprovalRequest[]>,
@@ -661,7 +927,7 @@ ${rows}
     })
     .join("");
   return `<div class="c-phase" data-key="phase-${escapeHtml(phase)}">
-<div class="c-ph" data-toggle="1"><span class="c-pn">${escapeHtml(phase)}</span><span class="c-pc tnum">${done}/${leaves.length}</span><span class="trk"><span class="base"></span>${mini}</span><span class="chev">▶</span></div>
+<div class="c-ph" data-toggle="1"><span class="c-pn">${escapeHtml(title ?? phase)}</span><span class="c-pc tnum">${done}/${leaves.length}</span><span class="trk"><span class="base"></span>${mini}</span><span class="chev">▶</span></div>
 <div class="c-rows">
 ${rows}
 </div>
@@ -903,7 +1169,9 @@ function renderLaneContent(
   const usage: string[] = [];
   if (tr?.tokensIn !== undefined) usage.push(`${fmtTokens(tr.tokensIn)} in`);
   if (tr?.tokensOut !== undefined) usage.push(`${fmtTokens(tr.tokensOut)} out`);
-  if (tr?.costUsd !== undefined) usage.push(`${tr.costEstimated ? "~" : ""}$${tr.costUsd.toFixed(2)}`);
+  if (tr?.costUsd === null) usage.push("cost unavailable");
+  else if (tr?.costUsd !== undefined)
+    usage.push(`${tr.costEstimated ? "~" : ""}$${tr.costUsd.toFixed(2)}`);
   const usageSec = usage.length || tr?.sessionId
     ? `<div class="dw-usage">${usage.map((u) => `<span>${u}</span>`).join("")}${tr?.sessionId ? `<span class="sess">session ${escapeHtml(tr.sessionId.slice(0, 8))}</span>` : ""}</div>`
     : "";

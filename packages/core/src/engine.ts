@@ -24,7 +24,14 @@ import {
   type QuickJSHandle,
 } from "quickjs-emscripten";
 import { canonicalJson } from "./canonical.js";
-import { PolicyError, type Json, type Policy, type ThunkSpec } from "./contracts.js";
+import {
+  PolicyError,
+  type Json,
+  type Policy,
+  type ProgramMeta,
+  type ThunkSpec,
+} from "./contracts.js";
+import { normalizeProgramMeta } from "./program-meta.js";
 
 export interface VmHooks {
   /**
@@ -33,7 +40,8 @@ export interface VmHooks {
    */
   onCall(seq: number, spec: ThunkSpec): void;
   onLog(message: string): void;
-  onPhase(name: string): void;
+  onPhase(name: string, state: "started" | "completed" | "failed", scope: number): void;
+  onProgramMeta?(meta: ProgramMeta | undefined): void;
 }
 
 export type ProgramState =
@@ -60,6 +68,7 @@ const BOOTSTRAP = String.raw`
   globalThis.FinalizationRegistry = undefined;
 
   var groupCounter = 0;
+  var phaseCounter = 0;
   var currentPhase = "";
 
   function dispatch(spec) {
@@ -140,21 +149,32 @@ const BOOTSTRAP = String.raw`
         'For a single call, use the per-call { phase: "' + label + '" } option instead.'
       );
     }
-    __orc_phase(label);
+    var scope = ++phaseCounter;
+    __orc_phase(label, "started", scope);
     var prev = currentPhase;
     currentPhase = label;
     try {
       var r = fn();
       if (r && typeof r.then === "function") {
         return r.then(
-          function (v) { currentPhase = prev; return v; },
-          function (e) { currentPhase = prev; throw e; }
+          function (v) {
+            currentPhase = prev;
+            __orc_phase(label, "completed", scope);
+            return v;
+          },
+          function (e) {
+            currentPhase = prev;
+            __orc_phase(label, "failed", scope);
+            throw e;
+          }
         );
       }
       currentPhase = prev;
+      __orc_phase(label, "completed", scope);
       return r;
     } catch (e) {
       currentPhase = prev;
+      __orc_phase(label, "failed", scope);
       throw e;
     }
   };
@@ -329,6 +349,7 @@ export class ProgramVM {
       vm.installHostFunctions();
       vm.evalOrThrow(BOOTSTRAP, "orc-bootstrap.js");
       vm.evalOrThrow(bundle, "program.bundle.js");
+      vm.hooks.onProgramMeta?.(vm.readProgramMeta());
       vm.evalOrThrow(INVOKE, "orc-invoke.js");
       vm.drain(); // initial turn: run the program to its first quiescent point
       return vm;
@@ -363,11 +384,40 @@ export class ProgramVM {
     ctx.setProp(ctx.global, "__orc_log", logFn);
     logFn.dispose();
 
-    const phaseFn = ctx.newFunction("__orc_phase", (nameHandle) => {
-      this.hooks.onPhase(ctx.getString(nameHandle));
+    const phaseFn = ctx.newFunction("__orc_phase", (nameHandle, stateHandle, scopeHandle) => {
+      this.hooks.onPhase(
+        ctx.getString(nameHandle),
+        ctx.getString(stateHandle) as "started" | "completed" | "failed",
+        Number(ctx.dump(scopeHandle)),
+      );
     });
     ctx.setProp(ctx.global, "__orc_phase", phaseFn);
     phaseFn.dispose();
+  }
+
+  private readProgramMeta(): ProgramMeta | undefined {
+    const moduleHandle = this.ctx.getProp(this.ctx.global, "__orc_mod");
+    const metaHandle = this.ctx.getProp(moduleHandle, "meta");
+    moduleHandle.dispose();
+    try {
+      if (this.ctx.dump(metaHandle) === undefined) return undefined;
+      this.resetBudget();
+      const serialized = this.ctx.callFunction(this.jsonSerialize!, this.ctx.undefined, metaHandle);
+      if ("error" in serialized && serialized.error) {
+        const error = this.ctx.dump(serialized.error) as { message?: unknown };
+        serialized.error.dispose();
+        throw new TypeError(String(error?.message ?? error));
+      }
+      const json = this.ctx.getString(serialized.value);
+      serialized.value.dispose();
+      if (this.interrupted) throw new PolicyError("step budget exceeded materializing program meta");
+      return normalizeProgramMeta(JSON.parse(json));
+    } catch (error) {
+      if (error instanceof PolicyError) throw error;
+      throw new PolicyError(`invalid program meta: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      metaHandle.dispose();
+    }
   }
 
   private evalOrThrow(code: string, filename: string): void {

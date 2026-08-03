@@ -20,7 +20,8 @@
  * and integrations are outside the narrow direct command/filesystem guarantee.
  */
 import * as path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { query, type Options, type PermissionMode, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -56,6 +57,7 @@ import type {
 
 const WRITE_TOOLS = ["Edit", "Write", "NotebookEdit"];
 const READ_ONLY_DISALLOWED_TOOLS = ["Bash", ...WRITE_TOOLS];
+const LIVE_USAGE_TIMEOUT_MS = 1_000;
 
 export const claudeHarness: Harness = {
   name: "claude",
@@ -195,6 +197,7 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
     : undefined;
 
   const claudePath = systemClaudePath();
+  const awsCredentialExport = sandboxWrites ? userAwsCredentialExport() : undefined;
   const options: Options = {
     cwd: req.cwd,
     model: req.model,
@@ -207,15 +210,16 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
     // roots. Read-only deliberately does not disable configured integrations.
     settingSources: sandboxWrites ? [] : ["user", "project", "local"],
     strictMcpConfig: sandboxWrites,
+    ...(awsCredentialExport ? { settings: { awsCredentialExport } } : {}),
     systemPrompt: { type: "preset", preset: "claude_code", append: req.system },
     maxTurns: 100,
     ...(req.approvalMode === "bypass" && !req.readOnly && !sandboxWrites
       ? { allowDangerouslySkipPermissions: true }
       : {}),
     ...(req.readOnly ? { disallowedTools: READ_ONLY_DISALLOWED_TOOLS } : {}),
+    ...(roots.length > 1 ? { additionalDirectories: roots.slice(1) } : {}),
     ...(sandboxWrites
       ? {
-          additionalDirectories: roots.slice(1),
           sandbox: {
             enabled: true,
             failIfUnavailable: true,
@@ -236,8 +240,16 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
   yield { kind: "model", model: req.model, reasoningEffort: req.reasoningEffort };
   let reportedModel = req.model;
   let syntheticFailure: string | undefined;
+  const sdkQuery = query({ prompt: req.prompt, options });
+  const seenAssistantRequests = new Set<string>();
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let liveUsageAvailable =
+    typeof sdkQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET === "function";
+  let usageBaselineUsd = req.sessionId ? undefined : 0;
+  let usageBaselinePromise: Promise<number | undefined> | undefined;
   try {
-    for await (const message of query({ prompt: req.prompt, options })) {
+    for await (const message of sdkQuery) {
       const m =
         (message as { message?: { model?: string } }).message?.model ??
         (message as { model?: string }).model;
@@ -255,6 +267,58 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
       // misreport it as an output-schema defect.
       if (syntheticFailure && message.type === "result") continue;
       for (const ev of mapSdkMessage(message)) yield ev;
+
+      if (message.type === "system" && message.subtype === "init" && liveUsageAvailable) {
+        usageBaselinePromise = currentSessionCostUsd(sdkQuery).catch(() => undefined);
+        continue;
+      }
+
+      if (message.type === "assistant") {
+        const messageId = message.message.id;
+        if (typeof messageId !== "string" || !seenAssistantRequests.has(messageId)) {
+          if (typeof messageId === "string") seenAssistantRequests.add(messageId);
+          const usage = message.message.usage as
+            | { input_tokens?: number; output_tokens?: number }
+            | undefined;
+          tokensIn += usage?.input_tokens ?? 0;
+          tokensOut += usage?.output_tokens ?? 0;
+          yield { kind: "usage", tokensIn, tokensOut };
+        }
+      }
+
+      // Claude may split one API response into multiple assistant frames. The
+      // exact session counter can become visible on any of them, or after the
+      // following tool-result frame, so sample each boundary and let Orc
+      // discard unchanged cumulative values.
+      if (
+        liveUsageAvailable &&
+        (message.type === "assistant" || message.type === "user")
+      ) {
+        try {
+          if (usageBaselinePromise) {
+            usageBaselineUsd = await usageBaselinePromise;
+            usageBaselinePromise = undefined;
+          }
+          if (usageBaselineUsd === undefined) {
+            liveUsageAvailable = false;
+            continue;
+          }
+          const sessionCostUsd = await currentSessionCostUsd(sdkQuery);
+          if (sessionCostUsd === undefined) {
+            liveUsageAvailable = false;
+          } else {
+            yield {
+              kind: "usage",
+              tokensIn,
+              tokensOut,
+              costUsd: Math.max(0, sessionCostUsd - usageBaselineUsd),
+              costEstimated: false,
+            };
+          }
+        } catch {
+          liveUsageAvailable = false;
+        }
+      }
     }
   } catch (err) {
     if (ctx.signal.aborted) {
@@ -264,6 +328,30 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
     }
   } finally {
     ctx.signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function currentSessionCostUsd(
+  sdkQuery: ReturnType<typeof query>,
+): Promise<number | undefined> {
+  const readUsage =
+    sdkQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+  if (typeof readUsage !== "function") return undefined;
+
+  let timeout: number | NodeJS.Timeout | undefined;
+  try {
+    const usage = await Promise.race([
+      readUsage.call(sdkQuery),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(resolve, LIVE_USAGE_TIMEOUT_MS);
+      }),
+    ]);
+    const costUsd = usage?.session.total_cost_usd;
+    return typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd >= 0
+      ? costUsd
+      : undefined;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -345,6 +433,20 @@ function sandboxRoots(req: LeafRequest): string[] {
       ),
     ),
   ];
+}
+
+function userAwsCredentialExport(): string | undefined {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
+    const settings = JSON.parse(readFileSync(path.join(configDir, "settings.json"), "utf8")) as {
+      awsCredentialExport?: unknown;
+    };
+    return typeof settings.awsCredentialExport === "string" && settings.awsCredentialExport.trim()
+      ? settings.awsCredentialExport
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function pathWithin(target: string, roots: string[], cwd: string): boolean {
