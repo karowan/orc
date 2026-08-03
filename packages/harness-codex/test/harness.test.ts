@@ -436,9 +436,12 @@ describe("codexHarness approval bridging", () => {
   it("suspends the output-idle watchdog while operator approval is pending", async () => {
     const { record, events } = await runScenario(
       "approval",
-      { approvalMode: "manual", readOnly: false, idleTimeoutMs: 50 },
+      // The watchdog arms at spawn, so the idle window must comfortably cover
+      // node's interpreter boot (~50-100ms) before the fixture's first byte;
+      // what matters is only that the approval delay far exceeds the window.
+      { approvalMode: "manual", readOnly: false, idleTimeoutMs: 400 },
       {
-        approvalDelayMs: 150,
+        approvalDelayMs: 900,
         decision: { behavior: "allow" },
       },
     );
