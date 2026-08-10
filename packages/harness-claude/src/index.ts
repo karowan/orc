@@ -212,7 +212,6 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
     strictMcpConfig: sandboxWrites,
     ...(awsCredentialExport ? { settings: { awsCredentialExport } } : {}),
     systemPrompt: { type: "preset", preset: "claude_code", append: req.system },
-    maxTurns: 100,
     ...(req.approvalMode === "bypass" && !req.readOnly && !sandboxWrites
       ? { allowDangerouslySkipPermissions: true }
       : {}),

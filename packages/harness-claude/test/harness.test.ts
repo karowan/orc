@@ -59,6 +59,17 @@ const unusedExecutor = {
 } satisfies Executor;
 
 describe("claude local policy", () => {
+  it("does not impose an SDK turn limit on agent leaves", async () => {
+    sdk.query.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {},
+    });
+
+    await collect(req(), context(unusedExecutor));
+
+    const options = (sdk.query.mock.calls.at(-1)![0] as { options: Options }).options;
+    expect(options).not.toHaveProperty("maxTurns");
+  });
+
   it("streams exact cumulative cost without double-counting split assistant frames", async () => {
     const readUsage = vi
       .fn()
