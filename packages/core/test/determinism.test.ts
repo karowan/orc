@@ -4,7 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { prepareRun, superviseRun, type Registry } from "../src/supervisor.js";
 import { readJournal, readResult, runPaths } from "../src/rundir.js";
-import { DEFAULT_POLICY, DivergenceError, type JournalRecord } from "../src/contracts.js";
+import {
+  DEFAULT_POLICY,
+  DivergenceError,
+  type Harness,
+  type JournalRecord,
+} from "../src/contracts.js";
 import { makeFakeHarness, makeRegistry, mulberry32 } from "./helpers/fake.js";
 
 const FIX = (name: string) => path.join(__dirname, "fixtures", name);
@@ -74,6 +79,10 @@ describe("live execution", () => {
     expect(result.lanes[1].status).toBe("error");
     // The failing group member does NOT cancel its siblings.
     expect(result.grouped.map((g) => g.status)).toEqual(["ok", "error", "ok"]);
+    const unnamedGroupCalls = readJournal(manifest.runId).filter(
+      (record) => record.t === "call" && record.seq >= 2,
+    );
+    expect(unnamedGroupCalls.every((record) => record.parallelGroup === undefined)).toBe(true);
   });
 
   it("ext.* leaves execute host-side and are journaled", async () => {
@@ -141,6 +150,65 @@ describe("policy and sandbox", () => {
     const registry = makeRegistry(makeFakeHarness());
     const { status } = await runProgram("writegate.orc.ts", registry, { allowWrites: true });
     expect(status.state).toBe("completed");
+  });
+
+  it("runs named write lanes concurrently and preserves their group in status", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let release!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const harness: Harness = {
+      name: "parallel-write-probe",
+      async discover() {
+        return {
+          available: true,
+          models: [{ id: "probe", default: true }],
+          approvalModes: ["auto"],
+          structuredOutput: true,
+          sessions: false,
+        };
+      },
+      async *invoke(req) {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        if (active === 2) release();
+        await bothStarted;
+        try {
+          yield { kind: "result", output: { seq: req.seq } };
+        } finally {
+          active--;
+        }
+      },
+    };
+    const registry = makeRegistry(harness);
+    const { manifest, status } = await runProgram("parallel-write-group.orc.ts", registry, {
+      allowWrites: true,
+      maxParallel: 2,
+    });
+
+    expect(status.state).toBe("completed");
+    expect(maxActive).toBe(2);
+    const calls = readJournal(manifest.runId).filter((record) => record.t === "call");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.readOnly === false)).toBe(true);
+    expect(calls.map((call) => call.parallelGroup)).toEqual([
+      { id: "wave-1", title: "Foundation" },
+      { id: "wave-1", title: "Foundation" },
+    ]);
+    expect(status.detail?.stages.find((stage) => stage.phase === "implementation")?.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "lane-a",
+          parallelGroup: { id: "wave-1", title: "Foundation" },
+        }),
+        expect.objectContaining({
+          id: "lane-b",
+          parallelGroup: { id: "wave-1", title: "Foundation" },
+        }),
+      ]),
+    );
   });
 
   it("deadlocked program fails with a defined outcome", async () => {

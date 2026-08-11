@@ -691,6 +691,7 @@ class Supervisor {
           kind: spec.kind,
           id: spec.id,
           phase: spec.phase,
+          parallelGroup: spec.parallelGroup,
           readOnly: spec.readOnly,
           specDigest: digest,
         };
@@ -1011,6 +1012,7 @@ class Supervisor {
       attempt,
       id: spec.id,
       phase: spec.phase,
+      parallelGroup: spec.parallelGroup,
       kind: spec.kind,
       harness:
         spec.kind === "agent"

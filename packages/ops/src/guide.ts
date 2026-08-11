@@ -103,7 +103,11 @@ its prompt (plus the shared \`--brief\`).
     never cancels the others. Outcomes come back in order as
     \`{ status: "ok", value } | { status: "error", error }\`, so you decide how to
     handle partial failure. (For fail-fast, use \`Promise.all\` over \`agent()\`,
-    which rejects on the first failure.)
+    which rejects on the first failure.) Pass an optional second argument such
+    as \`{ id: "wave-1", title: "Foundation" }\` to expose a stable named group
+    in durable status and monitoring. Specs may declare \`readOnly: false\`
+    when the run was launched with \`allowWrites\`; those write leaves execute
+    concurrently up to \`maxParallel\` and share the caller's filesystem.
 
 - phase(name, fn) => Promise<result>
     Group every agent() call made inside \`fn\` under a phase, for a readable

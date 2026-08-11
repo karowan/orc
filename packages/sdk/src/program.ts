@@ -33,6 +33,13 @@ export interface ParallelSpec extends AgentOptions {
   prompt: string;
 }
 
+export interface ParallelOptions {
+  /** Stable authored identifier used by monitors to group sibling leaves. */
+  id?: string;
+  /** Optional human-readable group label. */
+  title?: string;
+}
+
 export type Settled<T> = { status: "ok"; value: T } | { status: "error"; error: string };
 
 export interface OrcApi {
@@ -42,7 +49,7 @@ export interface OrcApi {
    * cancels the others) and comes back as a per-lane settled outcome, in order.
    * For fail-fast, use Promise.all over agent() instead.
    */
-  parallel(specs: ParallelSpec[]): Promise<Settled<Json>[]>;
+  parallel(specs: ParallelSpec[], options?: ParallelOptions): Promise<Settled<Json>[]>;
   /** Labels every call made inside fn for the waterfall. */
   phase<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
   log(message: string): void;

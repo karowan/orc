@@ -122,6 +122,11 @@ export interface RunApprovalDetail {
   summary?: string;
 }
 
+export interface ParallelGroup {
+  id: string;
+  title?: string;
+}
+
 export interface RunAttemptDetail {
   seq: number;
   attempt: number;
@@ -137,6 +142,7 @@ export interface RunAttemptDetail {
   startMs?: number;
   endMs?: number;
   reoriented?: boolean;
+  parallelGroup?: ParallelGroup;
   title?: string;
   summary?: string;
   fields?: UiPresentation["fields"];
@@ -432,7 +438,8 @@ export interface ThunkSpec {
   cwd?: string; // per-call override (plain path)
   phase?: string;
   idleTimeoutMs?: number | false;
-  groupId?: string; // parallel() sibling-abort group
+  groupId?: string; // deterministic internal parallel() invocation key
+  parallelGroup?: ParallelGroup;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +453,7 @@ export interface CallRecord {
   kind: ThunkSpec["kind"];
   id?: string;
   phase?: string;
+  parallelGroup?: ParallelGroup;
   readOnly: boolean;
   /** sha256 of the canonical ThunkSpec — replay verifies this. */
   specDigest: string;
@@ -536,6 +544,7 @@ export interface LeafTraceRecord {
   status: "running" | "ok" | "error";
   id?: string;
   phase?: string;
+  parallelGroup?: ParallelGroup;
   kind: string;
   harness?: string;
   model?: string; // resolved model (as the harness reports it actually ran)
@@ -636,6 +645,7 @@ export interface LeafStatus {
   seq: number;
   id?: string;
   phase?: string;
+  parallelGroup?: ParallelGroup;
   kind: string;
   status: "pending" | "running" | "ok" | "error";
   readOnly: boolean;
