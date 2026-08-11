@@ -323,7 +323,7 @@ export interface LeafRequest {
   cwd: string; // plain path, resolved by the supervisor
   approvalMode: ApprovalMode;
   sessionId?: string;
-  idleTimeoutMs?: number | false; // per-call output-idle watchdog; false disables
+  idleTimeoutMs?: number | false; // per-call activity watchdog; false disables
   /**
    * Filesystem confinement for WRITE leaves. Default false: a write leaf is an
    * unconfined subagent that can write wherever the caller can (builds write to
@@ -374,6 +374,8 @@ export type HarnessEvent =
 
 export interface HarnessContext {
   executor: Executor;
+  /** Report transport or runtime progress that does not produce a HarnessEvent. */
+  reportActivity(): void;
   requestApproval(
     req: Omit<ApprovalRequest, "id" | "requestedAtMs">,
   ): Promise<ApprovalDecision>;

@@ -92,7 +92,7 @@ its prompt (plus the shared \`--brief\`).
       reasoningEffort  "low" | "medium" | "high" | "xhigh" | "max"
       readOnly         default true; set false for a leaf that edits files
       cwd              working directory for this leaf (defaults to the run's)
-      idleTimeout      ms with no output before the leaf is killed (false = off)
+      idleTimeout      ms with no harness activity before the leaf is killed (false = off)
       phase            group this call under a phase label
     The live catalog at the end of this guide lists valid \`harness\`, \`model\`,
     and \`reasoningEffort\` values. Omit any of them to use the default.

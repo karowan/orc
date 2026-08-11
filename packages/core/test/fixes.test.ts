@@ -533,6 +533,42 @@ describe("supervisor shutdown", () => {
     await released.release();
   });
 
+  it("keeps a quiet harness leaf alive while it reports runtime activity", async () => {
+    const activeHarness: Harness = {
+      name: "active",
+      async discover() {
+        return {
+          available: true,
+          models: [],
+          approvalModes: ["auto"],
+          structuredOutput: true,
+          sessions: false,
+        };
+      },
+      async *invoke(_req, ctx) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        ctx.reportActivity();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        ctx.reportActivity();
+        yield { kind: "result", output: { completed: true } };
+      },
+    };
+    const registry = makeRegistry(activeHarness);
+    const manifest = await prepareRun(
+      {
+        programPath: FIX("retry.orc.ts"),
+        cwd: home,
+        brief: "b",
+        idleTimeout: 800,
+      },
+      registry,
+    );
+
+    const status = await superviseRun(manifest.runId, registry);
+
+    expect(status.state).toBe("completed");
+  });
+
   it("honors an extension-specific disabled idle timeout", async () => {
     const registry = makeRegistry(makeFakeHarness(), {
       extensions: new Map([

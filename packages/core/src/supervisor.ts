@@ -1081,9 +1081,15 @@ class Supervisor {
     const ctx = {
       executor,
       signal: leaf.abort.signal,
+      reportActivity: () => {
+        leaf.lastEventAtMs = Date.now();
+      },
       // Harness stderr/tracing is per-leaf detail, not run narrative: record it
       // as an hlog trace (drawer's collapsed "Harness log"), never as a feed event.
-      log: (m: string) => this.harnessLog(seq, m),
+      log: (m: string) => {
+        leaf.lastEventAtMs = Date.now();
+        this.harnessLog(seq, m);
+      },
       present: (value: UiPresentation) => {
         try {
           const normalized = normalizePresentation(value);
