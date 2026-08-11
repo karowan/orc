@@ -91,6 +91,7 @@ its prompt (plus the shared \`--brief\`).
       model            e.g. "claude-fable-5", "gpt-5.6-sol"
       reasoningEffort  "low" | "medium" | "high" | "xhigh" | "max"
       readOnly         default true; set false for a leaf that edits files
+      autoRetry        default true for read-only, false for writable leaves
       cwd              working directory for this leaf (defaults to the run's)
       idleTimeout      ms with no harness activity before the leaf is killed (false = off)
       phase            group this call under a phase label

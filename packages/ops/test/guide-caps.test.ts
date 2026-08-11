@@ -74,6 +74,7 @@ describe("guide (baked-in capabilities)", () => {
     expect(text).toContain("meta.graph");
     expect(text).toContain('kind: "loop"');
     expect(text).toContain("display-only");
+    expect(text).toContain("autoRetry");
     expect(text).not.toContain("orc launch");
     expect(text).not.toContain("orc capabilities");
     expect(text).not.toContain("## 2. Validate and launch");

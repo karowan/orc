@@ -22,6 +22,12 @@ export interface AgentOptions {
   schema?: Json;
   /** Default true. false requires the run's allow-writes grant (fail-closed). */
   readOnly?: boolean;
+  /**
+   * Retry transient failures using the supervisor's bounded retry budget.
+   * Defaults to true for read-only leaves and false for writable leaves.
+   * Writable retries re-orient against the current workspace before acting.
+   */
+  autoRetry?: boolean;
   /** Plain path. Defaults to the run cwd. */
   cwd?: string;
   /** Output-idle watchdog for this call, ms; false disables. */

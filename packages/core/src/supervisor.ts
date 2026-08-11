@@ -828,20 +828,23 @@ class Supervisor {
     if (this.stopping || !this.inflight.has(leaf.seq)) return; // already aborted+settled
     this.inflight.delete(leaf.seq);
 
-    // Supervisor retry table: a failed READ-ONLY leaf gets a bounded number of
-    // fresh attempts before it (and its parallel group) is failed. Write leaves
-    // are never auto-retried (a retry would double-apply mutations); a cancelled
-    // leaf is not retried either.
+    // Read-only leaves retry by default. Writable leaves retry only when the
+    // authored call explicitly opts in; every writable retry is re-oriented
+    // against the current workspace so partial mutations are not blindly
+    // repeated. Cancelled leaves are never retried.
+    const autoRetry = leaf.spec.autoRetry ?? leaf.spec.readOnly;
     if (
       outcome.status === "error" &&
-      leaf.spec.readOnly &&
+      autoRetry &&
       !leaf.abort.signal.aborted &&
       isRetryable(outcome.error) &&
       leaf.attempt <= this.policy.readOnlyRetries
     ) {
+      if (!leaf.spec.readOnly) this.markReorient(leaf.seq);
+      const mode = leaf.spec.readOnly ? "read-only" : "writable, re-orienting";
       this.traceEvent({
         kind: "log",
-        message: `leaf ${leaf.seq} failed (read-only) → retry ${leaf.attempt}/${this.policy.readOnlyRetries}`,
+        message: `leaf ${leaf.seq} failed (${mode}) → retry ${leaf.attempt}/${this.policy.readOnlyRetries}`,
       });
       this.dispatchQueue.push(leaf.seq); // re-dispatch with a fresh attempt
       this.signal();

@@ -106,6 +106,7 @@ const BOOTSTRAP = String.raw`
       reasoningEffort: o.reasoningEffort,
       schema: o.schema,
       readOnly: o.readOnly === false ? false : true,
+      autoRetry: o.autoRetry === true ? true : (o.autoRetry === false ? false : undefined),
       cwd: o.cwd,
       phase: o.phase,
       idleTimeoutMs: normTimeout(o.idleTimeout),

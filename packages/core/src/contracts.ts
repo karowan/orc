@@ -437,6 +437,7 @@ export interface ThunkSpec {
   reasoningEffort?: string;
   schema?: Json;
   readOnly: boolean;
+  autoRetry?: boolean;
   cwd?: string; // per-call override (plain path)
   phase?: string;
   idleTimeoutMs?: number | false;
@@ -705,7 +706,7 @@ export interface Policy {
   stepBudgetPerTurn: number; // interrupt-handler invocations per drain
   memoryLimitBytes: number;
   maxStackBytes: number;
-  readOnlyRetries: number; // extra in-run attempts for a failed read-only leaf
+  readOnlyRetries: number; // extra attempts for default read-only and opted-in leaves
 }
 
 export const DEFAULT_POLICY: Policy = {
