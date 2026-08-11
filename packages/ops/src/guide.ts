@@ -91,8 +91,9 @@ its prompt (plus the shared \`--brief\`).
       model            e.g. "claude-fable-5", "gpt-5.6-sol"
       reasoningEffort  "low" | "medium" | "high" | "xhigh" | "max"
       readOnly         default true; set false for a leaf that edits files
+      autoRetry        default true for read-only, false for writable leaves
       cwd              working directory for this leaf (defaults to the run's)
-      idleTimeout      ms with no output before the leaf is killed (false = off)
+      idleTimeout      ms with no harness activity before the leaf is killed (false = off)
       phase            group this call under a phase label
     The live catalog at the end of this guide lists valid \`harness\`, \`model\`,
     and \`reasoningEffort\` values. Omit any of them to use the default.
@@ -103,7 +104,11 @@ its prompt (plus the shared \`--brief\`).
     never cancels the others. Outcomes come back in order as
     \`{ status: "ok", value } | { status: "error", error }\`, so you decide how to
     handle partial failure. (For fail-fast, use \`Promise.all\` over \`agent()\`,
-    which rejects on the first failure.)
+    which rejects on the first failure.) Pass an optional second argument such
+    as \`{ id: "wave-1", title: "Foundation" }\` to expose a stable named group
+    in durable status and monitoring. Specs may declare \`readOnly: false\`
+    when the run was launched with \`allowWrites\`; those write leaves execute
+    concurrently up to \`maxParallel\` and share the caller's filesystem.
 
 - phase(name, fn) => Promise<result>
     Group every agent() call made inside \`fn\` under a phase, for a readable

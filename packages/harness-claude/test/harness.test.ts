@@ -32,6 +32,7 @@ function context(executor: Executor, signal = new AbortController().signal, logs
     executor,
     signal,
     log: (line) => logs.push(line),
+    reportActivity: () => undefined,
     requestApproval: async () => ({ behavior: "allow" }),
   };
 }

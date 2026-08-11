@@ -23,7 +23,8 @@
  *   edit-in-cwd   fileChange approval whose paths live under the thread cwd
  *   edit-out-cwd  fileChange approval with a path outside the thread cwd
  *   edit-dotdot   fileChange approval with a lexical parent segment
- *   idle          responds to turn/start, then goes silent forever
+ *   quiet-live    quiet turn whose responsive app-server later completes
+ *   idle          unresponsive after turn/start
  *   cancel        one delta, then waits for turn/interrupt
  *   discover      only initialize + model/list (for discover() tests)
  */
@@ -36,6 +37,7 @@ let THREAD_ID = "thread-fake-1";
 const TURN_ID = "turn-fake-1";
 let threadCwd = "/tmp";
 let approvalReplied = false;
+let quietLiveProbes = 0;
 
 function record(msg) {
   if (recordPath) appendFileSync(recordPath, JSON.stringify(msg) + "\n");
@@ -284,6 +286,9 @@ async function driveTurn() {
     case "idle":
       // Say nothing, forever. The harness's idle watchdog must kill us.
       break;
+    case "quiet-live":
+      // Completion is driven by the second liveness probe in the dispatcher.
+      break;
     case "cancel": {
       notify("item/agentMessage/delta", { threadId: THREAD_ID, turnId: TURN_ID, itemId: "msg-1", delta: "working..." });
       // Now wait: turn/interrupt handling lives in the main dispatcher.
@@ -376,6 +381,14 @@ function handle(msg) {
     case "turn/start":
       send({ id: msg.id, result: { turn: { id: TURN_ID, items: [], status: "inProgress" } } });
       driveTurn().catch(() => {});
+      break;
+    case "thread/read":
+      if (scenario === "idle") break;
+      send({ id: msg.id, result: { thread: { id: THREAD_ID, turns: [] } } });
+      if (scenario === "quiet-live" && ++quietLiveProbes === 2) {
+        agentMessage("finished after quiet work");
+        turnCompleted("completed");
+      }
       break;
     case "turn/interrupt":
       send({ id: msg.id, result: {} });

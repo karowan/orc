@@ -34,6 +34,7 @@ function ctx(): HarnessContext {
     executor: localExec,
     signal: new AbortController().signal,
     log: () => undefined,
+    reportActivity: () => undefined,
     requestApproval: async () => ({ behavior: "allow" as const }),
   };
 }

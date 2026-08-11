@@ -240,6 +240,25 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     expect(runs).toHaveLength(1); // write leaf tried exactly once
   });
 
+  it("retries an opted-in write leaf by re-orienting against partial mutations", async () => {
+    const log = path.join(home, "write-retry.log");
+    const registry = makeRegistry(makeFakeHarness({ flaky: { 0: 2 }, invocationLog: log }));
+    const { manifest, status } = await run("write-auto-retry.orc.ts", registry, {
+      allowWrites: true,
+    });
+
+    expect(status.state).toBe("completed");
+    const runs = fs.readFileSync(log, "utf8").trim().split("\n");
+    expect(runs).toHaveLength(3);
+    expect(runs[0]).not.toContain("RE-ORIENT NOTE");
+    expect(runs[1]).toContain("RE-ORIENT NOTE");
+    expect(runs[2]).toContain("RE-ORIENT NOTE");
+    const attempts = readTraces(manifest.runId)
+      .filter((trace) => trace.t === "leaf" && trace.seq === 0)
+      .map((trace) => trace.t === "leaf" && trace.attempt);
+    expect(new Set(attempts)).toEqual(new Set([1, 2, 3]));
+  });
+
   it("cuts off a run whose estimated cost passes the budget", async () => {
     // Each leaf reports ~$0.60; a $1.00 budget survives leaf a (0.60) and trips
     // during leaf b (1.20 > 1.00) → the run fails terminally with a budget error.
@@ -531,6 +550,42 @@ describe("supervisor shutdown", () => {
     expect(status.error).toMatch(/idle timeout/);
     const released = await acquireLock(runPaths(manifest.runId));
     await released.release();
+  });
+
+  it("keeps a quiet harness leaf alive while it reports runtime activity", async () => {
+    const activeHarness: Harness = {
+      name: "active",
+      async discover() {
+        return {
+          available: true,
+          models: [],
+          approvalModes: ["auto"],
+          structuredOutput: true,
+          sessions: false,
+        };
+      },
+      async *invoke(_req, ctx) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        ctx.reportActivity();
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        ctx.reportActivity();
+        yield { kind: "result", output: { completed: true } };
+      },
+    };
+    const registry = makeRegistry(activeHarness);
+    const manifest = await prepareRun(
+      {
+        programPath: FIX("retry.orc.ts"),
+        cwd: home,
+        brief: "b",
+        idleTimeout: 800,
+      },
+      registry,
+    );
+
+    const status = await superviseRun(manifest.runId, registry);
+
+    expect(status.state).toBe("completed");
   });
 
   it("honors an extension-specific disabled idle timeout", async () => {

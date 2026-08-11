@@ -106,10 +106,12 @@ const BOOTSTRAP = String.raw`
       reasoningEffort: o.reasoningEffort,
       schema: o.schema,
       readOnly: o.readOnly === false ? false : true,
+      autoRetry: o.autoRetry === true ? true : (o.autoRetry === false ? false : undefined),
       cwd: o.cwd,
       phase: o.phase,
       idleTimeoutMs: normTimeout(o.idleTimeout),
       groupId: o.__groupId,
+      parallelGroup: o.__parallelGroup,
     });
   };
 
@@ -117,14 +119,25 @@ const BOOTSTRAP = String.raw`
   // settled outcome ({status:"ok",value}|{status:"error",error}), so one lane's
   // failure never cancels or wastes its siblings. The caller decides how to
   // handle partial failure. (For fail-fast, use Promise.all over agent().)
-  globalThis.parallel = function (specs) {
+  globalThis.parallel = function (specs, options) {
     var gid = "g" + ++groupCounter;
+    var groupOptions = options || {};
+    var parallelGroup;
+    if (groupOptions.id !== undefined || groupOptions.title !== undefined) {
+      parallelGroup = {
+        id: groupOptions.id === undefined ? gid : String(groupOptions.id),
+      };
+      if (groupOptions.title !== undefined) {
+        parallelGroup.title = String(groupOptions.title);
+      }
+    }
     return Promise.all(
       specs.map(function (s) {
         var o = Object.assign({}, s);
         var prompt = o.prompt;
         delete o.prompt;
         o.__groupId = gid; // lane-grouping metadata for the monitor
+        o.__parallelGroup = parallelGroup;
         return globalThis.settle(globalThis.agent(prompt, o));
       })
     );

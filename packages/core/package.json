@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-core",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",

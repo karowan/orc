@@ -108,6 +108,7 @@ export function projectStatus(
         seq: rec.seq,
         id: rec.id,
         phase: rec.phase,
+        parallelGroup: rec.parallelGroup,
         kind: rec.kind,
         readOnly: rec.readOnly,
         status: "pending",
@@ -517,6 +518,9 @@ export function projectRunDetail(
       seq: source.seq,
       attempt: source.attempt,
       ...((trace?.id ?? leaf.id) ? { id: trace?.id ?? leaf.id } : {}),
+      ...((trace?.parallelGroup ?? leaf.parallelGroup)
+        ? { parallelGroup: trace?.parallelGroup ?? leaf.parallelGroup }
+        : {}),
       kind: trace?.kind ?? leaf.kind,
       status: source.status,
       readOnly: trace?.readOnly ?? leaf.readOnly,

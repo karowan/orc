@@ -122,6 +122,11 @@ export interface RunApprovalDetail {
   summary?: string;
 }
 
+export interface ParallelGroup {
+  id: string;
+  title?: string;
+}
+
 export interface RunAttemptDetail {
   seq: number;
   attempt: number;
@@ -137,6 +142,7 @@ export interface RunAttemptDetail {
   startMs?: number;
   endMs?: number;
   reoriented?: boolean;
+  parallelGroup?: ParallelGroup;
   title?: string;
   summary?: string;
   fields?: UiPresentation["fields"];
@@ -317,7 +323,7 @@ export interface LeafRequest {
   cwd: string; // plain path, resolved by the supervisor
   approvalMode: ApprovalMode;
   sessionId?: string;
-  idleTimeoutMs?: number | false; // per-call output-idle watchdog; false disables
+  idleTimeoutMs?: number | false; // per-call activity watchdog; false disables
   /**
    * Filesystem confinement for WRITE leaves. Default false: a write leaf is an
    * unconfined subagent that can write wherever the caller can (builds write to
@@ -368,6 +374,8 @@ export type HarnessEvent =
 
 export interface HarnessContext {
   executor: Executor;
+  /** Report transport or runtime progress that does not produce a HarnessEvent. */
+  reportActivity(): void;
   requestApproval(
     req: Omit<ApprovalRequest, "id" | "requestedAtMs">,
   ): Promise<ApprovalDecision>;
@@ -429,10 +437,12 @@ export interface ThunkSpec {
   reasoningEffort?: string;
   schema?: Json;
   readOnly: boolean;
+  autoRetry?: boolean;
   cwd?: string; // per-call override (plain path)
   phase?: string;
   idleTimeoutMs?: number | false;
-  groupId?: string; // parallel() sibling-abort group
+  groupId?: string; // deterministic internal parallel() invocation key
+  parallelGroup?: ParallelGroup;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +456,7 @@ export interface CallRecord {
   kind: ThunkSpec["kind"];
   id?: string;
   phase?: string;
+  parallelGroup?: ParallelGroup;
   readOnly: boolean;
   /** sha256 of the canonical ThunkSpec — replay verifies this. */
   specDigest: string;
@@ -536,6 +547,7 @@ export interface LeafTraceRecord {
   status: "running" | "ok" | "error";
   id?: string;
   phase?: string;
+  parallelGroup?: ParallelGroup;
   kind: string;
   harness?: string;
   model?: string; // resolved model (as the harness reports it actually ran)
@@ -636,6 +648,7 @@ export interface LeafStatus {
   seq: number;
   id?: string;
   phase?: string;
+  parallelGroup?: ParallelGroup;
   kind: string;
   status: "pending" | "running" | "ok" | "error";
   readOnly: boolean;
@@ -693,7 +706,7 @@ export interface Policy {
   stepBudgetPerTurn: number; // interrupt-handler invocations per drain
   memoryLimitBytes: number;
   maxStackBytes: number;
-  readOnlyRetries: number; // extra in-run attempts for a failed read-only leaf
+  readOnlyRetries: number; // extra attempts for default read-only and opted-in leaves
 }
 
 export const DEFAULT_POLICY: Policy = {

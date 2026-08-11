@@ -19,6 +19,7 @@ describe.skipIf(!live)("codexHarness (live)", () => {
     const cwd = await fs.mkdtemp(join(tmpdir(), "orc-codex-live-"));
     const ctx: HarnessContext = {
       executor: new LocalExecutor(),
+      reportActivity: () => undefined,
       requestApproval: async () => ({ behavior: "deny", message: "live test is read-only" }),
       signal: new AbortController().signal,
       log: () => {},

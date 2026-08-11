@@ -691,6 +691,7 @@ class Supervisor {
           kind: spec.kind,
           id: spec.id,
           phase: spec.phase,
+          parallelGroup: spec.parallelGroup,
           readOnly: spec.readOnly,
           specDigest: digest,
         };
@@ -827,20 +828,23 @@ class Supervisor {
     if (this.stopping || !this.inflight.has(leaf.seq)) return; // already aborted+settled
     this.inflight.delete(leaf.seq);
 
-    // Supervisor retry table: a failed READ-ONLY leaf gets a bounded number of
-    // fresh attempts before it (and its parallel group) is failed. Write leaves
-    // are never auto-retried (a retry would double-apply mutations); a cancelled
-    // leaf is not retried either.
+    // Read-only leaves retry by default. Writable leaves retry only when the
+    // authored call explicitly opts in; every writable retry is re-oriented
+    // against the current workspace so partial mutations are not blindly
+    // repeated. Cancelled leaves are never retried.
+    const autoRetry = leaf.spec.autoRetry ?? leaf.spec.readOnly;
     if (
       outcome.status === "error" &&
-      leaf.spec.readOnly &&
+      autoRetry &&
       !leaf.abort.signal.aborted &&
       isRetryable(outcome.error) &&
       leaf.attempt <= this.policy.readOnlyRetries
     ) {
+      if (!leaf.spec.readOnly) this.markReorient(leaf.seq);
+      const mode = leaf.spec.readOnly ? "read-only" : "writable, re-orienting";
       this.traceEvent({
         kind: "log",
-        message: `leaf ${leaf.seq} failed (read-only) → retry ${leaf.attempt}/${this.policy.readOnlyRetries}`,
+        message: `leaf ${leaf.seq} failed (${mode}) → retry ${leaf.attempt}/${this.policy.readOnlyRetries}`,
       });
       this.dispatchQueue.push(leaf.seq); // re-dispatch with a fresh attempt
       this.signal();
@@ -1011,6 +1015,7 @@ class Supervisor {
       attempt,
       id: spec.id,
       phase: spec.phase,
+      parallelGroup: spec.parallelGroup,
       kind: spec.kind,
       harness:
         spec.kind === "agent"
@@ -1079,9 +1084,15 @@ class Supervisor {
     const ctx = {
       executor,
       signal: leaf.abort.signal,
+      reportActivity: () => {
+        leaf.lastEventAtMs = Date.now();
+      },
       // Harness stderr/tracing is per-leaf detail, not run narrative: record it
       // as an hlog trace (drawer's collapsed "Harness log"), never as a feed event.
-      log: (m: string) => this.harnessLog(seq, m),
+      log: (m: string) => {
+        leaf.lastEventAtMs = Date.now();
+        this.harnessLog(seq, m);
+      },
       present: (value: UiPresentation) => {
         try {
           const normalized = normalizePresentation(value);

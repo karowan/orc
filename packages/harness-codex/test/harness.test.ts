@@ -70,6 +70,7 @@ async function runScenario(
   const controller = new AbortController();
   const ctx: HarnessContext = {
     executor: local,
+    reportActivity: () => undefined,
     requestApproval: async (req) => {
       approvals.push(req);
       if (opts.approvalDelayMs) {
@@ -541,6 +542,21 @@ describe("codexHarness approval bridging", () => {
 });
 
 describe("codexHarness watchdog and cancellation", () => {
+  it("keeps a quiet turn alive while app-server answers liveness probes", async () => {
+    const { events, record } = await runScenario("quiet-live", {
+      idleTimeoutMs: 1_000,
+    });
+
+    expect(
+      record.filter((message) => message.method === "thread/read"),
+    ).toHaveLength(2);
+    expect(events.some((event) => event.kind === "error")).toBe(false);
+    expect(events.at(-1)).toEqual({
+      kind: "result",
+      output: { text: "finished after quiet work" },
+    });
+  });
+
   it("kills the server and reports an error on output-idle timeout", async () => {
     const start = Date.now();
     const { events } = await runScenario("idle", { idleTimeoutMs: 400 });

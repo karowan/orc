@@ -366,27 +366,19 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
     let finalAnswer: string | undefined;
     let lastAgentMessage: string | undefined;
 
-    // Forward server stderr (tracing logs) to the supervisor log.
-    let errBuf = "";
-    proc.stderr.setEncoding("utf8");
-    proc.stderr.on("data", (chunk: string) => {
-      errBuf += chunk;
-      let idx: number;
-      while ((idx = errBuf.indexOf("\n")) >= 0) {
-        const line = errBuf.slice(0, idx).trim();
-        errBuf = errBuf.slice(idx + 1);
-        if (line) ctx.log(line); // hlog is already per-leaf + harness-attributed
-      }
-    });
-
-    // Output-idle watchdog: any stdout byte resets the timer.
+    // Transport-idle watchdog. Before declaring a quiet active turn dead, ask
+    // app-server to read its thread; a response proves the server is live
+    // without altering the turn.
     let idleTimer: NodeJS.Timeout | undefined;
+    let idleProbeTimer: NodeJS.Timeout | undefined;
     let idleFired = false;
     let idlePauseDepth = 0;
+    let requestIdleProbe: (() => void) | undefined;
     const clearIdle = (): void => {
-      if (!idleTimer) return;
-      clearTimeout(idleTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleProbeTimer) clearTimeout(idleProbeTimer);
       idleTimer = undefined;
+      idleProbeTimer = undefined;
     };
     const armIdle = (): void => {
       if (
@@ -397,6 +389,11 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
         return;
       }
       clearIdle();
+      idleProbeTimer = setTimeout(() => {
+        idleProbeTimer = undefined;
+        requestIdleProbe?.();
+      }, Math.max(1, Math.floor(req.idleTimeoutMs * 0.75)));
+      idleProbeTimer.unref?.();
       idleTimer = setTimeout(() => {
         idleTimer = undefined;
         idleFired = true;
@@ -408,6 +405,10 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       }, req.idleTimeoutMs);
       idleTimer.unref?.();
     };
+    const noteTransportActivity = (): void => {
+      ctx.reportActivity();
+      armIdle();
+    };
     const pauseIdle = (): void => {
       idlePauseDepth += 1;
       clearIdle();
@@ -416,7 +417,23 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       idlePauseDepth = Math.max(0, idlePauseDepth - 1);
       if (idlePauseDepth === 0) armIdle();
     };
-    proc.stdout.on("data", armIdle);
+
+    // Forward server stderr (tracing logs) to the supervisor log. Stderr is
+    // also real app-server activity even though JSON-RPC uses stdout.
+    let errBuf = "";
+    proc.stderr.setEncoding("utf8");
+    proc.stderr.on("data", (chunk: string) => {
+      noteTransportActivity();
+      errBuf += chunk;
+      let idx: number;
+      while ((idx = errBuf.indexOf("\n")) >= 0) {
+        const line = errBuf.slice(0, idx).trim();
+        errBuf = errBuf.slice(idx + 1);
+        if (line) ctx.log(line); // hlog is already per-leaf + harness-attributed
+      }
+    });
+
+    proc.stdout.on("data", noteTransportActivity);
     armIdle();
 
     let resolveTurn: (turn: TurnWire) => void;
@@ -746,6 +763,12 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
       onServerRequest,
       log: ctx.log,
     });
+    requestIdleProbe = () => {
+      if (!threadId) return;
+      void rpc
+        .request("thread/read", { threadId, includeTurns: false })
+        .catch(() => undefined);
+    };
 
     // Cancellation: best-effort turn/interrupt, then kill.
     let aborted = false;
