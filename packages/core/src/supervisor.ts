@@ -1603,6 +1603,14 @@ function assertHarnessEvent(value: unknown): asserts value is HarnessEvent {
       throw new Error(`harness ${String(kind)} event has invalid ${name}`);
   };
   const optionalString = (name: string): void => {
+    // null is treated as absent, not invalid: harnesses that serialize
+    // optional fields naturally (JSON.dumps of a dict with a None) emit
+    // null, and rejecting it killed every lane of an affected review in
+    // production while the engines' outputs were already complete.
+    if (event[name] === null) {
+      delete (event as Record<string, unknown>)[name];
+      return;
+    }
     if (event[name] !== undefined && typeof event[name] !== "string") {
       throw new Error(`harness ${String(kind)} event has invalid ${name}`);
     }
