@@ -690,3 +690,49 @@ describe("jsonschema validator", () => {
     expect(validateAgainstSchema({ child: {} }, schema)).toBeNull();
   });
 });
+
+describe("per-leaf networkAccess (narrow-only)", () => {
+  const echoNet = (extra: Parameters<typeof makeFakeHarness>[0] = {}) =>
+    makeRegistry(makeFakeHarness({ result: (req) => req.networkAccess ?? null, ...extra }));
+
+  it("narrows a granted run per leaf and falls back to the grant when omitted", async () => {
+    const { manifest, status } = await run("network-access.orc.ts", echoNet(), {
+      allowWrites: true,
+      networkAccess: true,
+    });
+    expect(status.state).toBe("completed");
+    const result = readResult(runPaths(manifest.runId), status.resultSha!) as {
+      off: boolean | null;
+      inherit: boolean | null;
+      on: boolean | null;
+    };
+    expect(result.off).toBe(false); // narrowing works
+    expect(result.inherit).toBe(true); // manifest fallback
+    expect(result.on).toBe(true); // explicit true within the grant is a no-op
+    // The effective setting is recorded on the leaf trace beside readOnly.
+    const traced = new Map(
+      readTraces(manifest.runId)
+        .filter((t) => t.t === "leaf")
+        .map((t) => (t.t === "leaf" ? [t.id, t.networkAccess] : [undefined, undefined])),
+    );
+    expect(traced.get("off")).toBe(false);
+    expect(traced.get("inherit")).toBe(true);
+    expect(traced.get("on")).toBe(true);
+  });
+
+  it("an ungranted run stays offline when the leaf does not ask", async () => {
+    const { manifest, status } = await run("writegate.orc.ts", echoNet(), { allowWrites: true });
+    expect(status.state).toBe("completed");
+    expect(readResult(runPaths(manifest.runId), status.resultSha!)).toBe(false);
+  });
+
+  it("fail-closed: a leaf requesting network beyond the grant never dispatches", async () => {
+    const log = path.join(home, "net-gate.log");
+    const { status } = await run("network-gate.orc.ts", echoNet({ invocationLog: log }), { allowWrites: true });
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(
+      /network-declared leaf \(seq 0\) but the run was launched without network_access — fail-closed/,
+    );
+    expect(fs.existsSync(log)).toBe(false); // the harness never saw the leaf
+  });
+});

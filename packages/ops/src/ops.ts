@@ -23,6 +23,7 @@ import {
   readTraces,
   resolveApprovalDecision,
   runPaths,
+  sourceRequestsNetwork,
   sourceRequestsWrite,
   statusForRun,
   superviseRun,
@@ -62,6 +63,7 @@ interface FirstFrontierCall {
   kind: string;
   id?: string;
   readOnly: boolean;
+  networkAccess?: boolean;
   harness?: string;
   model?: string;
   reasoningEffort?: string;
@@ -116,17 +118,20 @@ export const launch = defineOp({
     );
     const bundle = fs.readFileSync(runPaths(manifest.runId).program, "utf8");
     const requestsWrite = sourceRequestsWrite(bundle);
+    const requestsNetwork = sourceRequestsNetwork(bundle);
     writeReport(manifest.runId);
     const monitorUrl = `http://127.0.0.1:${portForHome(orcHome())}/runs/${manifest.runId}`;
     if (input.wait) {
       const status = await superviseRun(manifest.runId, ctx.registry, { onUpdate: debouncedReport() });
-      return { runId: manifest.runId, requestsWrite, monitorUrl, reportPath: runPaths(manifest.runId).report, status };
+      return { runId: manifest.runId, requestsWrite, requestsNetwork, monitorUrl, reportPath: runPaths(manifest.runId).report, status };
     }
     await spawnDetachedSupervisor(manifest.runId, ctx.registryCwd);
     return {
       runId: manifest.runId,
       requestsWrite,
+      requestsNetwork,
       allowWrites: manifest.allowWrites,
+      networkAccess: manifest.networkAccess,
       approvalMode: manifest.approvalMode,
       monitorUrl,
       reportPath: runPaths(manifest.runId).report,
@@ -142,6 +147,7 @@ export const validate = defineOp({
   input: z.object({
     programPath: z.string(),
     allowWrites: z.boolean().default(false),
+    networkAccess: z.boolean().default(false),
     approvalMode: ApprovalMode.default("auto").describe("check the first-frontier harnesses can honor this mode"),
     harness: z.string().optional().describe("default harness override (same precedence as launch)"),
     checkCapabilities: z.boolean().default(true).describe("probe referenced harnesses for model/effort/mode support (slower)"),
@@ -149,6 +155,7 @@ export const validate = defineOp({
   async handler(input, ctx) {
     const { bundle, sha256 } = await compileProgram(input.programPath);
     const requestsWrite = sourceRequestsWrite(bundle);
+    const requestsNetwork = sourceRequestsNetwork(bundle);
     const firstCalls: FirstFrontierCall[] = [];
     const problems: string[] = [];
     let vm: ProgramVM | undefined;
@@ -160,6 +167,7 @@ export const validate = defineOp({
             kind: spec.kind,
             id: spec.id,
             readOnly: spec.readOnly,
+            networkAccess: spec.networkAccess,
             harness: spec.harness,
             model: spec.model,
             reasoningEffort: spec.reasoningEffort,
@@ -206,6 +214,9 @@ export const validate = defineOp({
       }
       if (!call.readOnly && !input.allowWrites) {
         problems.push(`call ${call.seq} declares readOnly:false but allowWrites was not granted (fail-closed at dispatch)`);
+      }
+      if (call.networkAccess === true && !input.networkAccess) {
+        problems.push(`call ${call.seq} declares networkAccess:true but networkAccess was not granted (fail-closed at dispatch)`);
       }
       if (call.kind === "agent") {
         const harnessName = call.harness ?? input.harness ?? ctx.registry.defaultHarness;
@@ -270,7 +281,7 @@ export const validate = defineOp({
         }
       }
     }
-    return { ok: problems.length === 0, sha256, requestsWrite, firstCalls, problems };
+    return { ok: problems.length === 0, sha256, requestsWrite, requestsNetwork, firstCalls, problems };
   },
 });
 

@@ -91,6 +91,8 @@ its prompt (plus the shared \`--brief\`).
       model            e.g. "claude-fable-5", "gpt-5.6-sol"
       reasoningEffort  "low" | "medium" | "high" | "xhigh" | "max"
       readOnly         default true; set false for a leaf that edits files
+      networkAccess    may narrow the run's network grant for this leaf (false);
+                       requesting network the run was not granted fails closed
       autoRetry        default true for read-only, false for writable leaves
       cwd              working directory for this leaf (defaults to the run's)
       idleTimeout      ms with no harness activity before the leaf is killed (false = off)
@@ -141,8 +143,11 @@ By default leaves are read-only. To let a leaf directly modify files or run
 mutating commands, set \`readOnly: false\`; the host must also grant the run
 write access. Configured hooks and MCP tools are not disabled for read-only
 leaves; their side effects are outside this guarantee. A write leaf runs with
-the permissions and filesystem confinement selected by the host. Resuming a
-stopped write leaf re-checks working-tree state before continuing.
+the permissions and filesystem confinement selected by the host. Inside a
+sandbox, outbound network is available only when the run was launched with
+network access; a leaf may opt out with \`networkAccess: false\` but can never
+widen the run's grant. Resuming a stopped write leaf re-checks working-tree
+state before continuing.
 `;
 
 export const ORC_CLI_GUIDE = `

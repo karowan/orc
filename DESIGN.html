@@ -1087,6 +1087,7 @@ export default program;</code></pre>
               <tr><th scope="row"><code>readOnly</code></th><td>Leaf specification</td><td>Built-in command and file-mutation tools cannot be restored by approval or bypass mode.</td><td>Configured hooks and MCPs, including Computer Use, are not disabled; their side effects are outside the promise.</td></tr>
               <tr><th scope="row"><code>approvalMode</code></th><td>Run manifest, mapped by harness</td><td>Controls whether native requests bridge to an operator, deny automatically, or run autonomously.</td><td>Approval is not filesystem confinement and cannot weaken <code>readOnly</code>.</td></tr>
               <tr><th scope="row"><code>sandbox</code></th><td>Run manifest, write leaves only</td><td>Built-in write paths use native confinement to <code>cwd + sandboxDirs</code> and fail if the harness cannot enforce its boundary.</td><td>It is not a universal boundary around configured external integrations.</td></tr>
+              <tr><th scope="row"><code>networkAccess</code></th><td>Run manifest grants; leaf may narrow (fail-closed on widening)</td><td>A leaf declaring <code>networkAccess:true</code> cannot dispatch unless the run granted network; sandboxed write leaves always receive an explicit setting, never an inherited default.</td><td>On unsandboxed runs or read-only leaves the flag has no effect, so <code>false</code> is not containment.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1097,6 +1098,7 @@ export default program;</code></pre>
             <code>readOnly</code> wins over every approval mode. For a write leaf,
             <code>sandbox:true</code> wins over bypass for filesystem roots.
             The run-level <code>allowWrites</code> gate must be open before either path executes.
+            The run-level <code>networkAccess</code> grant is a ceiling: a leaf may narrow it but never widen it.
           </p>
         </div>
 
