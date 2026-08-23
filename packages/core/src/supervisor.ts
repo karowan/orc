@@ -238,6 +238,11 @@ export function sourceRequestsWrite(source: string): boolean {
   return /readOnly\s*:\s*false/.test(source);
 }
 
+/** Static pre-scan: does the program source declare any network-requesting leaf? */
+export function sourceRequestsNetwork(source: string): boolean {
+  return /networkAccess\s*:\s*true/.test(source);
+}
+
 export async function prepareRun(
   opts: LaunchOptions,
   registry: Registry,
@@ -685,6 +690,11 @@ class Supervisor {
             `write-declared leaf (seq ${seq}) but the run was launched without allow_writes — fail-closed`,
           );
         }
+        if (spec.networkAccess === true && !this.manifest.networkAccess) {
+          throw new PolicyError(
+            `network-declared leaf (seq ${seq}) but the run was launched without network_access — fail-closed`,
+          );
+        }
         const rec: CallRecord = {
           t: "call",
           seq,
@@ -993,6 +1003,11 @@ class Supervisor {
   ): Promise<LeafOutcome["outcome"]> {
     const { spec, seq, attempt } = leaf;
     const cwd = spec.cwd ?? this.manifest.cwd;
+    // Narrow-only: the run's networkAccess grant is a ceiling. Only a literal
+    // false narrows it; any other value (including a forged non-boolean via a
+    // direct dispatch) gets the manifest value, so a leaf can never widen.
+    const networkAccess =
+      spec.networkAccess === false ? false : this.manifest.networkAccess;
     const executor = this.registry.executor;
     let rev = 0;
     const startMs = Date.now();
@@ -1023,6 +1038,7 @@ class Supervisor {
           : undefined,
       cwd,
       readOnly: spec.readOnly,
+      networkAccess: spec.kind === "agent" ? networkAccess : undefined,
       startMs,
       prompt: spec.prompt ? boundString(spec.prompt, 16 * 1024) : undefined,
       brief: boundString(this.manifest.brief, 4 * 1024),
@@ -1179,7 +1195,7 @@ class Supervisor {
         idleTimeoutMs: leaf.idleTimeoutMs,
         sandbox: this.manifest.sandbox,
         sandboxDirs: this.manifest.sandboxDirs,
-        networkAccess: this.manifest.networkAccess,
+        networkAccess,
       };
 
       let result: Json | undefined;
@@ -1583,7 +1599,7 @@ function isRetryable(error: string): boolean {
   // model call and delays the real failure. Config/routing errors plus the
   // structured-output schema rejections (OpenAI/codex strict mode) are all
   // author-fixable, not transient.
-  return !/unknown harness|unknown extension|unregistered extension|fails inputSchema|allow_writes|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|output[\s_-]?schema|result exceeds cap|result is not valid JSON/i.test(
+  return !/unknown harness|unknown extension|unregistered extension|fails inputSchema|allow_writes|network_access|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|output[\s_-]?schema|result exceeds cap|result is not valid JSON/i.test(
     error,
   );
 }

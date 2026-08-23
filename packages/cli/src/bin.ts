@@ -139,6 +139,9 @@ function render(opName: string, result: unknown, asJson: boolean): void {
     if (r.requestsWrite && !r.allowWrites) {
       process.stdout.write(`note    program declares write leaves but allow-writes was not granted — they will fail closed\n`);
     }
+    if (r.requestsNetwork && !r.networkAccess) {
+      process.stdout.write(`note    program declares network leaves but network-access was not granted — they will fail closed\n`);
+    }
     return;
   }
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");

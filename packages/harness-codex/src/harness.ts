@@ -349,6 +349,19 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
             ),
           ]
         : undefined;
+    // Sandboxed write leaves get an EXPLICIT network override both ways —
+    // omitting it would inherit the user's $CODEX_HOME/config.toml default.
+    // Read-only leaves never carry network config.
+    const networkConfig =
+      req.sandbox && !req.readOnly
+        ? {
+            config: {
+              sandbox_workspace_write: {
+                network_access: req.networkAccess === true,
+              },
+            },
+          }
+        : undefined;
 
     const proc: Proc = ctx.executor.spawn(appServerCommand, { cwd: req.cwd });
     let turnId: string | undefined;
@@ -801,9 +814,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
           ...(sandbox !== undefined ? { sandbox } : {}), // omit -> inherit user's config default
-          ...(req.sandbox && req.networkAccess
-            ? { config: { sandbox_workspace_write: { network_access: true } } }
-            : {}),
+          ...(networkConfig ?? {}),
           ...(developerInstructions ? { developerInstructions } : {}),
         });
         threadId = threadResult.thread?.id ?? req.sessionId;
@@ -813,9 +824,7 @@ export function createCodexHarness(options: CodexHarnessOptions = {}): Harness {
           ...(runtimeWorkspaceRoots ? { runtimeWorkspaceRoots } : {}),
           approvalPolicy,
           ...(sandbox !== undefined ? { sandbox } : {}), // omit -> inherit user's config default
-          ...(req.sandbox && req.networkAccess
-            ? { config: { sandbox_workspace_write: { network_access: true } } }
-            : {}),
+          ...(networkConfig ?? {}),
           ...(developerInstructions ? { developerInstructions } : {}),
         });
         threadId = threadResult.thread?.id;

@@ -437,6 +437,8 @@ export interface ThunkSpec {
   reasoningEffort?: string;
   schema?: Json;
   readOnly: boolean;
+  /** Narrow-only per-leaf network setting; see AgentOptions.networkAccess for the full contract. */
+  networkAccess?: boolean;
   autoRetry?: boolean;
   cwd?: string; // per-call override (plain path)
   phase?: string;
@@ -554,6 +556,7 @@ export interface LeafTraceRecord {
   reasoningEffort?: string; // resolved reasoning level
   cwd?: string;
   readOnly: boolean;
+  networkAccess?: boolean; // effective outbound-network setting (absent in older journals)
   startMs: number;
   endMs?: number;
   prompt?: string; // resolved prompt (bounded)

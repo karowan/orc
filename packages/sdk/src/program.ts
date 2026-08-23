@@ -23,6 +23,15 @@ export interface AgentOptions {
   /** Default true. false requires the run's allow-writes grant (fail-closed). */
   readOnly?: boolean;
   /**
+   * Narrow-only against the run's networkAccess grant: false opts this leaf
+   * out of a granted network; true beyond the grant fails closed (a run
+   * launched without network access refuses the leaf before dispatch).
+   * Enforcement is sandbox-dependent — on a run launched without sandboxing,
+   * or on read-only leaves, the flag has no effect, so `false` must not be
+   * relied on as containment.
+   */
+  networkAccess?: boolean;
+  /**
    * Retry transient failures using the supervisor's bounded retry budget.
    * Defaults to true for read-only leaves and false for writable leaves.
    * Writable retries re-orient against the current workspace before acting.

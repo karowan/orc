@@ -82,6 +82,14 @@ const BOOTSTRAP = String.raw`
     return undefined;
   }
 
+  // Tri-state boolean: only literal true/false survive; anything else is
+  // "unset" so the field stays absent from the spec (digest stability).
+  function normTriBool(v) {
+    if (v === true) return true;
+    if (v === false) return false;
+    return undefined;
+  }
+
   // Dispatch a leaf and, when its completion resolves, restore the phase that
   // was active at CALL time. Correct under concurrency because orc delivers
   // exactly one completion per quiescent drain: the restore microtask runs
@@ -106,7 +114,8 @@ const BOOTSTRAP = String.raw`
       reasoningEffort: o.reasoningEffort,
       schema: o.schema,
       readOnly: o.readOnly === false ? false : true,
-      autoRetry: o.autoRetry === true ? true : (o.autoRetry === false ? false : undefined),
+      networkAccess: normTriBool(o.networkAccess),
+      autoRetry: normTriBool(o.autoRetry),
       cwd: o.cwd,
       phase: o.phase,
       idleTimeoutMs: normTimeout(o.idleTimeout),

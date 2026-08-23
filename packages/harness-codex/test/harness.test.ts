@@ -312,7 +312,11 @@ describe("codexHarness happy path", () => {
     const sbStart = methodParams(sb.record, "thread/start");
     expect(sbStart.sandbox).toBe("workspace-write");
     expect(sbStart.runtimeWorkspaceRoots).toEqual([sb.cwd, "/opt/orc-cache"]);
-    expect(sbStart.config).toBeUndefined();
+    // Sandboxed write leaves carry an EXPLICIT network setting both ways;
+    // omission would inherit the user's config default.
+    expect(sbStart.config).toEqual({
+      sandbox_workspace_write: { network_access: false },
+    });
     const online = await runScenario("happy", {
       approvalMode: "auto",
       readOnly: false,
@@ -326,6 +330,37 @@ describe("codexHarness happy path", () => {
     expect(methodParams(bypass.record, "thread/start").sandbox).toBe(
       "danger-full-access",
     );
+  });
+
+  it("network config is explicit for sandboxed write leaves and absent for read-only leaves", async () => {
+    // A granted-but-narrowed write leaf sends an explicit false override.
+    const offline = await runScenario("happy", {
+      approvalMode: "auto",
+      readOnly: false,
+      sandbox: true,
+      networkAccess: false,
+    });
+    expect(methodParams(offline.record, "thread/start").config).toEqual({
+      sandbox_workspace_write: { network_access: false },
+    });
+    // Read-only leaves never carry network config, whatever the request says.
+    const ro = await runScenario("happy", {
+      approvalMode: "auto",
+      readOnly: true,
+      sandbox: true,
+      networkAccess: true,
+    });
+    expect(methodParams(ro.record, "thread/start").config).toBeUndefined();
+    // The resume site applies the same override.
+    const resumed = await runScenario("happy", {
+      sessionId: "thread-old-7",
+      readOnly: false,
+      sandbox: true,
+      networkAccess: false,
+    });
+    expect(methodParams(resumed.record, "thread/resume").config).toEqual({
+      sandbox_workspace_write: { network_access: false },
+    });
   });
 
   it("returns {text} when no schema is set", async () => {
