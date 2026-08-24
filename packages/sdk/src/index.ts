@@ -109,7 +109,8 @@ export class OrcRun {
 
   async cancel(): Promise<void> {
     const ctx = await this.orc.ctx();
-    await cancelOp.handler({ runId: this.runId }, ctx);
+    // Parse applies the op defaults: cooperative grace first, then hard cancel.
+    await cancelOp.handler(cancelOp.input.parse({ runId: this.runId }), ctx);
   }
 }
 

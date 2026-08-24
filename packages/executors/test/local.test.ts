@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { Proc } from "@karowanorg/orc-core";
+import { livePgids, readJsonl, runPaths, withPgidRecording, type PgidRecord, type Proc } from "@karowanorg/orc-core";
 import { LocalExecutor } from "../src/local.js";
 import { checkCwd, doctor } from "../src/doctor.js";
 import { collectRun } from "../src/run.js";
@@ -197,5 +197,31 @@ describe("doctor", () => {
     expect(sh?.path).toMatch(/\/sh$/);
     const missing = report.harnesses.find((h) => h.name === "definitely-not-a-real-binary-orc");
     expect(missing?.found).toBe(false);
+  });
+});
+
+describe("pgid recording", () => {
+  it("records a spawned child's process group on spawn and marks it released on exit", async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), "orc-pgids-"));
+    const previousHome = process.env.ORC_HOME;
+    process.env.ORC_HOME = home;
+    try {
+      const paths = runPaths("r_pgid_rec");
+      await fs.mkdir(paths.dir, { recursive: true });
+      const executor = withPgidRecording(local, paths);
+      const proc = executor.spawn(["node", "-e", "setTimeout(() => undefined, 150)"]);
+      expect(proc.pid).toBeDefined();
+      // Detached children lead their own group, so the recorded pgid is the pid.
+      expect(livePgids(paths)).toEqual([proc.pid]);
+      await proc.exited;
+      expect(await waitFor(() => livePgids(paths).length === 0, 3000)).toBe(true);
+      const records = readJsonl<PgidRecord>(paths.pgids);
+      expect(records.map((record) => record.t)).toEqual(["spawn", "exit"]);
+      expect(new Set(records.map((record) => record.pgid))).toEqual(new Set([proc.pid]));
+    } finally {
+      if (previousHome === undefined) delete process.env.ORC_HOME;
+      else process.env.ORC_HOME = previousHome;
+      await fs.rm(home, { recursive: true, force: true });
+    }
   });
 });
