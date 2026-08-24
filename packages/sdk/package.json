@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-sdk",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
