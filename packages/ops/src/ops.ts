@@ -10,16 +10,20 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   DEFAULT_POLICY,
+  JsonlAppender,
   ProgramVM,
   acquireLock,
   appendControl,
   compileProgram,
   listRuns,
+  livePgids,
   openApprovals,
   prepareRun,
+  readControl,
   readJournal,
   readManifest,
   readResult,
+  readSupervisorPid,
   readTraces,
   resolveApprovalDecision,
   runPaths,
@@ -29,6 +33,7 @@ import {
   superviseRun,
   type HarnessCapabilities,
   type Json,
+  type JournalRecord,
   type Registry,
   type RunStatus,
   type ThunkSpec,
@@ -287,11 +292,17 @@ export const validate = defineOp({
 
 export const status = defineOp({
   name: "status",
-  doc: "Body-free status projection for a run.",
+  doc: "Body-free status projection for a run, with a supervisor-liveness probe on unfinished runs.",
   readOnly: true,
   input: z.object({ runId: RunId }),
   async handler(input) {
-    return statusForRun(input.runId);
+    const current = statusForRun(input.runId);
+    if (current.state !== "running") return current;
+    // The journal alone cannot distinguish "still working" from "supervisor
+    // died without a finish record"; only the lock can. Report liveness beside
+    // the projection without touching the journal-derived state — hard cancel
+    // is what turns a stalled run terminal.
+    return { ...current, supervisorAlive: await supervisorIsAlive(input.runId) };
   },
 });
 
@@ -386,13 +397,35 @@ export const list = defineOp({
 
 export const cancel = defineOp({
   name: "cancel",
-  doc: "Queue cancellation. Leaves get TERM→KILL on their whole process group.",
+  doc: "Cancel a run. Cooperative first (a live supervisor settles it; leaves get TERM→KILL on their process groups); past the grace — or when no supervisor is left alive — the recorded process groups are force-killed and the journal is finished.",
   readOnly: false,
-  input: z.object({ runId: RunId }),
+  input: z.object({
+    runId: RunId,
+    hard: z.boolean().default(true).describe("force-kill recorded process groups and finish the journal when cooperation fails"),
+    graceSeconds: z.number().min(0).max(120).default(8).describe("how long a live supervisor gets to settle cooperatively"),
+  }),
   async handler(input) {
     requireRunningRun(input.runId);
     appendControl(input.runId, { t: "cancel", atMs: Date.now() });
-    return { enqueued: true };
+    if (!input.hard) return { enqueued: true };
+    const graceMs = Math.round(input.graceSeconds * 1000);
+    // The cooperative window only helps while a live supervisor can consume
+    // the control message; a dead one never will, so skip straight to the kill.
+    if (await supervisorIsAlive(input.runId)) {
+      const deadline = Date.now() + graceMs;
+      do {
+        if (statusForRun(input.runId).state !== "running") {
+          return { enqueued: true, settled: true, hard: false };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      } while (Date.now() < deadline);
+      if (statusForRun(input.runId).state !== "running") {
+        return { enqueued: true, settled: true, hard: false };
+      }
+    }
+    await killRunProcessGroups(input.runId, Math.min(graceMs, 2_000));
+    appendHardCancelFinish(input.runId);
+    return { enqueued: true, settled: true, hard: true };
   },
 });
 
@@ -412,10 +445,12 @@ export const resume = defineOp({
     }
     const current = statusForRun(input.runId);
     if (current.state === "completed") throw new Error(`run ${input.runId} already completed`);
-    const lock = await acquireLock(runPaths(input.runId));
-    await lock.release();
-    // tradeoff: releasing before spawn leaves a small ownership race; an
-    // atomic handoff needs a supervisor protocol rather than this one-shot CLI.
+    if (await supervisorIsAlive(input.runId)) {
+      throw new Error("run is owned by a live supervisor");
+    }
+    // tradeoff: probing (acquire+release) before spawn leaves a small ownership
+    // race; an atomic handoff needs a supervisor protocol rather than this
+    // one-shot CLI.
     await spawnDetachedSupervisor(input.runId, ctx.registryCwd);
     return { runId: input.runId, resumed: true };
   },
@@ -676,6 +711,90 @@ function requireRunningRun(runId: string): RunStatus {
   const current = statusForRun(runId);
   if (current.state !== "running") throw new Error(`run ${runId} is ${current.state}, not running`);
   return current;
+}
+
+/**
+ * Supervisor liveness ground truth: the advisory lock. Successfully acquiring
+ * (and immediately releasing) it proves the owner is gone; contention proves
+ * it alive. Shared by status, cancel, and resume.
+ */
+async function supervisorIsAlive(runId: string): Promise<boolean> {
+  try {
+    const lock = await acquireLock(runPaths(runId));
+    await lock.release();
+    return false;
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("live supervisor")) return true;
+    throw err;
+  }
+}
+
+function signalGroup(pgid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pgid, signal); // negative pid ⇒ the whole process group
+  } catch {
+    /* ESRCH: already gone; EPERM: not ours to signal — nothing more to do */
+  }
+}
+
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means the group still exists but is not signalable by us.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * TERM→KILL every process group the run durably recorded: executor leaves
+ * (detached group leaders in pgids.jsonl) first, then the supervisor's own
+ * group — the detached supervisor leads its group, SDK-spawned leaf children
+ * share its pgid, and on macOS the group outlives a dead leader, so orphans
+ * are still reaped.
+ */
+async function killRunProcessGroups(runId: string, escalateAfterMs: number): Promise<void> {
+  const paths = runPaths(runId);
+  const groups = livePgids(paths);
+  const supervisorPid = readSupervisorPid(paths);
+  if (supervisorPid !== undefined && !groups.includes(supervisorPid)) groups.push(supervisorPid);
+  const remaining = () => groups.filter(groupAlive);
+  if (remaining().length === 0) return;
+  for (const pgid of remaining()) signalGroup(pgid, "SIGTERM");
+  const termDeadline = Date.now() + escalateAfterMs;
+  while (remaining().length > 0 && Date.now() < termDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  for (const pgid of remaining()) signalGroup(pgid, "SIGKILL");
+  // SIGKILL delivery is asynchronous; give the kernel a bounded beat to reap
+  // before the finish record declares the run terminal.
+  const killDeadline = Date.now() + 2_000;
+  while (remaining().length > 0 && Date.now() < killDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/**
+ * The finish the dead supervisor could not write. Appending from outside the
+ * supervisor is safe: JsonlAppender opens O_APPEND and commits each record as
+ * a single write, readJsonl tolerates a torn tail, and projection and replay
+ * both take the LAST finish record — so racing a dying supervisor's own finish
+ * append at worst produces a benign duplicate.
+ */
+function appendHardCancelFinish(runId: string): void {
+  if (statusForRun(runId).state !== "running") return; // someone else finished it
+  const appender = new JsonlAppender<JournalRecord>(runPaths(runId).journal);
+  try {
+    appender.append({
+      t: "finish",
+      status: "cancelled",
+      error: "cancelled by operator (hard)",
+      controlOffset: readControl(runId).length,
+    });
+  } finally {
+    appender.close();
+  }
 }
 
 function detachedSupervisorArgs(runId: string): string[] {

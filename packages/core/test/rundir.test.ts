@@ -9,11 +9,15 @@ import type { RunManifest } from "../src/contracts.js";
 import {
   JsonlAppender,
   acquireLock,
+  appendPgid,
   createRunDir,
+  livePgids,
   newRunId,
   readJsonl,
   readManifest,
+  readSupervisorPid,
   runPaths,
+  writeSupervisorPid,
 } from "../src/rundir.js";
 
 let home: string;
@@ -219,5 +223,31 @@ describe("supervisor lock", () => {
       fs.writeFileSync(stop, "");
       await Promise.all(exits);
     }
+  });
+});
+
+describe("hard-cancel trail files", () => {
+  it("records the supervisor pid and overwrites it on reacquisition", () => {
+    const paths = emptyRun("r_pid_trail");
+    expect(readSupervisorPid(paths)).toBeUndefined();
+    writeSupervisorPid(paths, 1234);
+    expect(readSupervisorPid(paths)).toBe(1234);
+    writeSupervisorPid(paths, 5678); // a resume takes over the trail
+    expect(readSupervisorPid(paths)).toBe(5678);
+
+    fs.writeFileSync(paths.supervisorPid, "not a pid");
+    expect(readSupervisorPid(paths)).toBeUndefined();
+  });
+
+  it("livePgids is spawn minus exit", () => {
+    const paths = emptyRun("r_pgid_trail");
+    expect(livePgids(paths)).toEqual([]);
+    appendPgid(paths, { t: "spawn", pgid: 100, atMs: 1 });
+    appendPgid(paths, { t: "spawn", pgid: 200, atMs: 2 });
+    expect(livePgids(paths)).toEqual([100, 200]);
+    appendPgid(paths, { t: "exit", pgid: 100, atMs: 3 });
+    expect(livePgids(paths)).toEqual([200]);
+    appendPgid(paths, { t: "exit", pgid: 200, atMs: 4 });
+    expect(livePgids(paths)).toEqual([]);
   });
 });

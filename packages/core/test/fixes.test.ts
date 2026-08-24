@@ -389,7 +389,9 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     const { status } = await run("schema-result.orc.ts", registry);
     expect(status.state).toBe("failed");
     expect(status.error).toMatch(/result fails output schema/);
-    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+    // Persistently invalid output gets its single corrective re-ask (below),
+    // then fails with today's error shape — never a blind autoRetry loop.
+    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
   });
 
   it("does not retry a deterministically oversized read-only result", async () => {
@@ -414,6 +416,82 @@ describe("read-only leaf retry (supervisor retry table)", () => {
     expect(status.state).toBe("failed");
     expect(status.error).toMatch(/result exceeds cap/);
     expect(fs.readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+});
+
+describe("structured-output schema re-ask", () => {
+  const discovery = async () =>
+    ({
+      available: true,
+      models: [],
+      approvalModes: ["auto"],
+      structuredOutput: true,
+      sessions: false,
+    }) as const;
+
+  it("re-dispatches the same leaf once with the violation appended, then succeeds", async () => {
+    const prompts: string[] = [];
+    const harness: Harness = {
+      name: "reask",
+      discover: discovery,
+      async *invoke(req) {
+        prompts.push(req.prompt);
+        yield { kind: "result", output: prompts.length === 1 ? { n: "not a number" } : { n: 42 } };
+      },
+    };
+    const { manifest, status } = await run("schema-result.orc.ts", makeRegistry(harness));
+    expect(status.state).toBe("completed");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).not.toContain("SCHEMA CORRECTION");
+    // The re-ask carries the exact violation, appended to the unchanged prompt.
+    expect(prompts[1]).toContain("failed schema validation");
+    expect(prompts[1]).toContain("must be number");
+    expect(prompts[1].startsWith(prompts[0])).toBe(true);
+    // It rides the normal attempt machinery: two durable attempts, one ok done.
+    const journal = readJournal(manifest.runId);
+    const attempts = journal.filter((r) => r.t === "attempt" && r.seq === 0);
+    expect(attempts.map((r) => r.t === "attempt" && r.attempt)).toEqual([1, 2]);
+    const dones = journal.filter((r) => r.t === "done" && r.seq === 0);
+    expect(dones).toHaveLength(1);
+    expect(dones[0].t === "done" && dones[0].status).toBe("ok");
+    expect(dones[0].t === "done" && dones[0].attempt).toBe(2);
+  });
+
+  it("resume replays a journal containing a re-ask without divergence", async () => {
+    let schemaLeafCalls = 0;
+    let failSecondLeaf = true;
+    const harness: Harness = {
+      name: "reask-resume",
+      discover: discovery,
+      async *invoke(req) {
+        if (req.seq === 0) {
+          schemaLeafCalls++;
+          yield { kind: "result", output: schemaLeafCalls === 1 ? { n: "nope" } : { n: 7 } };
+          return;
+        }
+        if (failSecondLeaf) {
+          // Deterministic (non-retryable) so the first run fails immediately.
+          yield { kind: "error", message: "turn failed: invalid schema" };
+          return;
+        }
+        yield { kind: "result", output: { ok: true } };
+      },
+    };
+    const registry = makeRegistry(harness);
+    const manifest = await prepareRun(
+      { programPath: FIX("reask-then-fail.orc.ts"), cwd: home, brief: "b" },
+      registry,
+    );
+    const first = await superviseRun(manifest.runId, registry);
+    expect(first.state).toBe("failed");
+    expect(schemaLeafCalls).toBe(2); // invalid output + its one re-ask
+
+    failSecondLeaf = false;
+    const resumed = await superviseRun(manifest.runId, registry);
+    expect(resumed.state).toBe("completed");
+    // The re-ask history (same call digest, attempts 1..2, final done) replayed
+    // from the journal; the leaf was never re-invoked.
+    expect(schemaLeafCalls).toBe(2);
   });
 });
 

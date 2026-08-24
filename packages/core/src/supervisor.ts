@@ -54,7 +54,9 @@ import {
   readResult,
   readTraces,
   runPaths,
+  withPgidRecording,
   writeResult,
+  writeSupervisorPid,
   type RunPaths,
 } from "./rundir.js";
 import {
@@ -65,6 +67,7 @@ import {
 } from "./status.js";
 
 const READ_ONLY_SHUTDOWN_GRACE_MS = 1_000;
+const SCHEMA_VIOLATION_PREFIX = "result fails output schema: ";
 const PRESENTATION_DOCUMENT_BYTES = 128 * 1024;
 const PRESENTATION_MEDIA_TYPE =
   /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:\s*;\s*[A-Za-z0-9!#$%&'*+.^_`|~-]+\s*=\s*(?:"[^"\r\n]*"|[A-Za-z0-9!#$%&'*+.^_`|~-]+))*$/;
@@ -307,6 +310,10 @@ export async function superviseRun(
   const manifest = readManifest(runId);
   const paths = runPaths(runId);
   const lock = await acquireLock(paths);
+  // Durable liveness trail: with the lock held, this process is the owner.
+  // A hard cancel signals this pid's process group once the lock proves the
+  // owner dead (or wedged past its grace), so record it before any dispatch.
+  writeSupervisorPid(paths, process.pid);
   let journalOut: JsonlAppender<JournalRecord> | undefined;
   let traceOut: JsonlAppender<TraceRecord> | undefined;
   let controlWatcher: fs.FSWatcher | undefined;
@@ -373,6 +380,12 @@ class Supervisor {
   private replayCallCursor = 0; // verified against callRecords during replay
   private phaseNames: string[] = [];
   private programMetaRecorded = false;
+  /** Seqs that already spent their single structured-output schema re-ask. */
+  private schemaReaskUsed = new Set<number>();
+  /** Violation text to append to the next attempt's LeafRequest prompt. */
+  private schemaReaskViolation = new Map<number, string>();
+  /** Registry executor wrapped so leaf process groups are durably recorded. */
+  private readonly leafExecutor: Executor;
 
   constructor(
     private readonly manifest: RunManifest,
@@ -382,7 +395,9 @@ class Supervisor {
     private readonly policy: Policy,
     private readonly journalOut: JsonlAppender<JournalRecord>,
     private readonly traceOut: JsonlAppender<TraceRecord>,
-  ) {}
+  ) {
+    this.leafExecutor = withPgidRecording(registry.executor, paths);
+  }
 
   async run(): Promise<RunStatus> {
     const journal = readJournal(this.manifest.runId);
@@ -838,6 +853,36 @@ class Supervisor {
     if (this.stopping || !this.inflight.has(leaf.seq)) return; // already aborted+settled
     this.inflight.delete(leaf.seq);
 
+    // A structured-output schema failure earns exactly ONE re-ask: re-dispatch
+    // the same call with the violation spelled out. The amendment happens at
+    // LeafRequest construction (like the re-orient preamble), so the ThunkSpec
+    // and its journaled digest never change, and the extra invocation rides
+    // the normal attempt records — replay just delivers the final completion.
+    // The bound is deliberately independent of autoRetry: schema rejections
+    // are classified non-retryable below (a blind retry wastes a model call),
+    // but a corrected re-ask is not blind.
+    if (
+      outcome.status === "error" &&
+      leaf.spec.kind === "agent" &&
+      leaf.spec.schema !== undefined &&
+      !leaf.abort.signal.aborted &&
+      outcome.error.startsWith(SCHEMA_VIOLATION_PREFIX) &&
+      !this.schemaReaskUsed.has(leaf.seq)
+    ) {
+      this.schemaReaskUsed.add(leaf.seq);
+      this.schemaReaskViolation.set(
+        leaf.seq,
+        outcome.error.slice(SCHEMA_VIOLATION_PREFIX.length),
+      );
+      this.traceEvent({
+        kind: "log",
+        message: `leaf ${leaf.seq} output failed schema validation → re-asking once with the violation`,
+      });
+      this.dispatchQueue.push(leaf.seq);
+      this.signal();
+      return;
+    }
+
     // Read-only leaves retry by default. Writable leaves retry only when the
     // authored call explicitly opts in; every writable retry is re-oriented
     // against the current workspace so partial mutations are not blindly
@@ -1008,7 +1053,7 @@ class Supervisor {
     // direct dispatch) gets the manifest value, so a leaf can never widen.
     const networkAccess =
       spec.networkAccess === false ? false : this.manifest.networkAccess;
-    const executor = this.registry.executor;
+    const executor = this.leafExecutor;
     let rev = 0;
     const startMs = Date.now();
     const toolCalls = new Map<string, ToolCallTrace>();
@@ -1178,6 +1223,11 @@ class Supervisor {
       if (this.reorientSeqs.has(seq)) {
         prompt = (await this.reorientPreamble(executor, cwd)) + prompt;
       }
+      const violation = this.schemaReaskViolation.get(seq);
+      if (violation !== undefined) {
+        this.schemaReaskViolation.delete(seq); // consumed by this attempt
+        prompt += schemaReaskNote(violation);
+      }
 
       const req: LeafRequest = {
         runId: this.manifest.runId,
@@ -1310,7 +1360,7 @@ class Supervisor {
     const snapshot = JSON.parse(canonical) as Json;
     if (schema !== undefined) {
       const problem = validateAgainstSchema(snapshot, schema);
-      if (problem) throw new Error(`result fails output schema: ${problem}`);
+      if (problem) throw new Error(SCHEMA_VIOLATION_PREFIX + problem);
     }
     return snapshot;
   }
@@ -1593,12 +1643,27 @@ function effectiveCompletions(
   return out;
 }
 
+/**
+ * Appended to the re-asked attempt's prompt (never the spec) after a
+ * structured-output schema failure. Sessions are deliberately not resumed:
+ * harnesses do not guarantee session continuation, so the re-ask is a fresh
+ * attempt that carries the exact violation instead.
+ */
+function schemaReaskNote(violation: string): string {
+  return (
+    `\n\n---\n\nSCHEMA CORRECTION: your previous attempt's structured output failed schema validation:\n` +
+    `${violation}\n` +
+    `Produce the answer again and return corrected JSON only — it must conform exactly to the output schema.`
+  );
+}
+
 /** Deterministic setup errors are not worth retrying. */
 function isRetryable(error: string): boolean {
   // Deterministic errors won't change on a re-run, so retrying only wastes a
   // model call and delays the real failure. Config/routing errors plus the
   // structured-output schema rejections (OpenAI/codex strict mode) are all
-  // author-fixable, not transient.
+  // author-fixable, not transient. (Host-side schema failures get their single
+  // corrective re-ask in onLeafDone before this classification applies.)
   return !/unknown harness|unknown extension|unregistered extension|fails inputSchema|allow_writes|network_access|invalid_json_schema|invalid schema|unsupported schema|additionalProperties|output[\s_-]?schema|result exceeds cap|result is not valid JSON/i.test(
     error,
   );

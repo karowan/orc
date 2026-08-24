@@ -144,6 +144,11 @@ function render(opName: string, result: unknown, asJson: boolean): void {
     }
     return;
   }
+  if (opName === "status" && r.state === "running" && r.supervisorAlive === false) {
+    process.stdout.write(
+      "note    journal says running but no supervisor holds the lock — the run is stalled (orc cancel force-finishes it; orc resume restarts it)\n",
+    );
+  }
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 }
 

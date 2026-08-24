@@ -4,7 +4,7 @@ import * as os from "node:os";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { canonicalJson, sha256Hex } from "./canonical.js";
-import type { Json, JournalRecord, RunManifest, TraceRecord, ControlMessage } from "./contracts.js";
+import type { Executor, Json, JournalRecord, RunManifest, TraceRecord, ControlMessage } from "./contracts.js";
 
 /** State home: ~/.orc or $ORC_HOME. One run = one directory under runs/. */
 export function orcHome(): string {
@@ -132,6 +132,8 @@ export interface RunPaths {
   results: string;
   report: string;
   lock: string;
+  supervisorPid: string;
+  pgids: string;
 }
 
 export function runPaths(runId: string): RunPaths {
@@ -146,6 +148,8 @@ export function runPaths(runId: string): RunPaths {
     results: path.join(dir, "results"),
     report: path.join(dir, "report.html"),
     lock: path.join(dir, "supervisor.lock"),
+    supervisorPid: path.join(dir, "supervisor.pid"),
+    pgids: path.join(dir, "pgids.jsonl"),
   };
 }
 
@@ -216,6 +220,80 @@ export function appendControl(runId: string, msg: ControlMessage): void {
   const appender = new JsonlAppender<ControlMessage>(runPaths(runId).control);
   appender.append(msg, { fsync: true });
   appender.close();
+}
+
+// ---------------------------------------------------------------------------
+// Hard-cancel trail: the supervisor's pid and the executor children's process
+// groups, kept durable so an out-of-band canceller can reap a run whose
+// supervisor is dead or wedged and can no longer cooperate.
+// ---------------------------------------------------------------------------
+
+/** Record the owning supervisor's pid. Overwritten by every (re)acquisition. */
+export function writeSupervisorPid(paths: RunPaths, pid: number): void {
+  fs.writeFileSync(paths.supervisorPid, `${pid}\n`);
+}
+
+export function readSupervisorPid(paths: RunPaths): number | undefined {
+  if (!fs.existsSync(paths.supervisorPid)) return undefined;
+  const pid = Number(fs.readFileSync(paths.supervisorPid, "utf8").trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/** One executor child's process group: recorded on spawn, released on exit. */
+export interface PgidRecord {
+  t: "spawn" | "exit";
+  pgid: number;
+  atMs: number;
+}
+
+export function appendPgid(paths: RunPaths, record: PgidRecord): void {
+  const appender = new JsonlAppender<PgidRecord>(paths.pgids);
+  try {
+    appender.append(record, { fsync: true });
+  } finally {
+    appender.close();
+  }
+}
+
+/** Process groups spawned for this run that have no recorded exit. */
+export function livePgids(paths: RunPaths): number[] {
+  const live = new Set<number>();
+  for (const record of readJsonl<PgidRecord>(paths.pgids)) {
+    if (record.t === "spawn") live.add(record.pgid);
+    else live.delete(record.pgid);
+  }
+  return [...live];
+}
+
+/**
+ * Run-scoped executor wrapper handed to leaves: executor children are detached
+ * process-group leaders (pid === pgid — that is what makes Proc.kill's
+ * group-wide TERM→KILL possible), and a hard cancel must be able to find those
+ * groups after the supervisor is gone. `run()` probes are awaited to
+ * completion by their callers and are deliberately not recorded.
+ */
+export function withPgidRecording(executor: Executor, paths: RunPaths): Executor {
+  return {
+    spawn(cmd, opts) {
+      const proc = executor.spawn(cmd, opts);
+      const pgid = proc.pid;
+      if (pgid !== undefined) {
+        appendPgid(paths, { t: "spawn", pgid, atMs: Date.now() });
+        void proc.exited.then(() => {
+          try {
+            appendPgid(paths, { t: "exit", pgid, atMs: Date.now() });
+          } catch {
+            /* a stale live record only means a later no-op kill */
+          }
+        });
+      }
+      return proc;
+    },
+    run: (cmd, opts) => executor.run(cmd, opts),
+    exists: (target) => executor.exists(target),
+    readFile: (target) => executor.readFile(target),
+    writeFile: (target, data) => executor.writeFile(target, data),
+  };
 }
 
 // ---------------------------------------------------------------------------
