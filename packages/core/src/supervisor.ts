@@ -214,7 +214,8 @@ export interface Registry {
 export interface LaunchOptions {
   programPath: string;
   cwd?: string;
-  brief: string;
+  /** Opaque run-level context fanned out to every leaf. */
+  context?: string;
   allowWrites?: boolean;
   approvalMode?: RunManifest["approvalMode"];
   sandbox?: boolean;
@@ -254,8 +255,6 @@ export async function prepareRun(
   const cwd = fs.realpathSync(path.resolve(opts.cwd ?? process.cwd()));
   if (!fs.statSync(cwd).isDirectory())
     throw new Error(`cwd is not a directory: ${cwd}`);
-  const brief = opts.brief?.trim();
-  if (!brief) throw new Error("brief is required");
   if (opts.budgetUsd !== undefined && !(opts.budgetUsd > 0)) {
     throw new Error("budget must be a positive USD amount");
   }
@@ -267,7 +266,7 @@ export async function prepareRun(
     programPath: path.resolve(opts.programPath),
     programSha256: sha256,
     cwd,
-    brief,
+    context: opts.context,
     allowWrites: opts.allowWrites ?? false,
     approvalMode: opts.approvalMode ?? "auto",
     sandbox: opts.sandbox ?? false,
@@ -1053,6 +1052,7 @@ class Supervisor {
     // direct dispatch) gets the manifest value, so a leaf can never widen.
     const networkAccess =
       spec.networkAccess === false ? false : this.manifest.networkAccess;
+    const context = composeContext(this.manifest.context, spec.context);
     const executor = this.leafExecutor;
     let rev = 0;
     const startMs = Date.now();
@@ -1086,7 +1086,7 @@ class Supervisor {
       networkAccess: spec.kind === "agent" ? networkAccess : undefined,
       startMs,
       prompt: spec.prompt ? boundString(spec.prompt, 16 * 1024) : undefined,
-      brief: boundString(this.manifest.brief, 4 * 1024),
+      context: context ? boundString(context, 4 * 1024) : undefined,
       reoriented: this.reorientSeqs.has(seq) || undefined,
     };
     const emitTrace = (
@@ -1234,8 +1234,8 @@ class Supervisor {
         seq,
         id: spec.id,
         prompt,
-        system: leafSystemPrompt(spec.readOnly, cwd, this.manifest.brief),
-        brief: this.manifest.brief,
+        system: leafSystemPrompt(spec.readOnly, cwd, context),
+        context: context || undefined,
         schema: spec.schema,
         model: spec.model,
         reasoningEffort: spec.reasoningEffort,
@@ -1762,19 +1762,29 @@ function assertHarnessEvent(value: unknown): asserts value is HarnessEvent {
   }
 }
 
+/**
+ * Run-level context first, then the thunk's, blank-line joined — shared, then
+ * specific. A slot is empty when undefined or whitespace-only; participating
+ * slots are carried verbatim (never trimmed, never truncated).
+ */
+export function composeContext(run?: string, thunk?: string): string {
+  return [run, thunk]
+    .filter((s): s is string => s !== undefined && s.trim() !== "")
+    .join("\n\n");
+}
+
 export function leafSystemPrompt(
   readOnly: boolean,
   cwd: string,
-  brief: string,
+  context: string,
 ): string {
   const mutation = readOnly
     ? "This task is READ-ONLY: inspect freely but do not modify files, run mutating commands, or change system state."
     : "This task may modify files under the working directory. Make only the changes the task requires.";
-  return (
+  const head =
     `You are an orc leaf agent. You start fresh with no memory of other leaves; everything you need is in this prompt.\n` +
-    `Working directory: ${cwd}\n${mutation}\n` +
-    `SHARED CONTEXT (brief):\n${brief}`
-  );
+    `Working directory: ${cwd}\n${mutation}`;
+  return context ? `${head}\nCONTEXT:\n${context}` : head;
 }
 
 export { newRunId };

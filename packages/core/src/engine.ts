@@ -108,6 +108,7 @@ const BOOTSTRAP = String.raw`
     return dispatchLeaf({
       kind: "agent",
       prompt: String(prompt),
+      context: o.context,
       id: o.id,
       harness: o.harness,
       model: o.model,

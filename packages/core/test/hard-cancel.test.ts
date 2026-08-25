@@ -19,7 +19,7 @@ describe("supervisor liveness trail", () => {
   it("records its own pid durably after taking the lock", async () => {
     const registry = makeRegistry(makeFakeHarness());
     const manifest = await prepareRun(
-      { programPath: FIX("retry.orc.ts"), cwd: home, brief: "b" },
+      { programPath: FIX("retry.orc.ts"), cwd: home },
       registry,
     );
     const status = await superviseRun(manifest.runId, registry);
@@ -56,7 +56,7 @@ describe("supervisor liveness trail", () => {
       ]),
     });
     const manifest = await prepareRun(
-      { programPath: FIX("ext.orc.ts"), cwd: home, brief: "b" },
+      { programPath: FIX("ext.orc.ts"), cwd: home },
       registry,
     );
     const status = await superviseRun(manifest.runId, registry);

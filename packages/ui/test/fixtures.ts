@@ -13,7 +13,7 @@ export function makeManifest(runId: string, over: Partial<RunManifest> = {}): Ru
     programPath: "/tmp/program.ts",
     programSha256: "deadbeefdeadbeef",
     cwd: "/tmp/work",
-    brief: "do the thing",
+    context: "do the thing",
     allowWrites: true,
     approvalMode: "manual",
     maxParallel: 4,

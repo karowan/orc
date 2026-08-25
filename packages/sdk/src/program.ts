@@ -20,6 +20,12 @@ export interface AgentOptions {
   reasoningEffort?: string;
   /** JSON Schema for structured output. */
   schema?: Json;
+  /**
+   * Opaque background for this leaf, composed after the run-level context
+   * (shared first, blank-line joined). `prompt` is the task; `context` is
+   * ambient background.
+   */
+  context?: string;
   /** Default true. false requires the run's allow-writes grant (fail-closed). */
   readOnly?: boolean;
   /**

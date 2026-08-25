@@ -11,7 +11,7 @@ const manifest: RunManifest = {
   programPath: "/tmp/p.orc.ts",
   programSha256: "0".repeat(64),
   cwd: "/tmp",
-  brief: "test",
+  context: "test",
   allowWrites: false,
   approvalMode: "auto",
   sandbox: false,

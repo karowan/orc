@@ -79,13 +79,15 @@ phase view.
 IMPORTANT — leaves are isolated. Each agent() runs a FRESH subagent that shares
 NONE of your context: it cannot see this program, your conversation, other
 leaves' prompts or results, or anything you know that you haven't written into
-its prompt (plus the shared \`--brief\`).
+its prompt (plus any shared \`--context\`).
 
 - agent(prompt, opts?) => Promise<result>
     Dispatch one agent. Returns its result (matching \`schema\` if you pass one).
     A failed leaf rejects the promise, so wrap it in try/catch if you want to
     handle failure. Options:
       id               a label shown in the monitor
+      context          ambient background for this leaf, added after the run's
+                       shared context (\`prompt\` is the task)
       schema           JSON Schema; the result is structured output matching it
       harness          "claude" | "codex" | a configured harness (default: auto)
       model            e.g. "claude-fable-5", "gpt-5.6-sol"
@@ -154,9 +156,9 @@ export const ORC_CLI_GUIDE = `
 ## 2. Validate and launch
 
     orc validate --program-path ./my.orc.ts       # compile + preview, no run
-    orc launch   --program-path ./my.orc.ts --brief "what this run is for"
+    orc launch   --program-path ./my.orc.ts --context "what this run is for"
 
-\`--brief\` (required) is shared context added to every leaf. Common launch flags:
+\`--context\` (optional) is shared context added to every leaf. Common launch flags:
 \`--allow-writes\`, \`--approval-mode manual|accept-edits|auto|bypass\`,
 \`--sandbox\`, \`--harness claude|codex\`, \`--budget <usd>\` (fail the run after
 observed estimated cost exceeds this; concurrent work may overshoot), \`--wait\`

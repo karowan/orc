@@ -84,7 +84,7 @@ export const launch = defineOp({
   input: z.object({
     programPath: z.string().describe("path to the program (.orc.ts/.ts/.js)"),
     cwd: z.string().optional().describe("working directory (plain path); defaults to the caller's cwd"),
-    brief: z.string().describe("shared context injected into every leaf"),
+    context: z.string().optional().describe("optional shared context injected into every leaf"),
     allowWrites: z.boolean().default(false).describe("grant write-declared leaves permission to mutate files"),
     approvalMode: ApprovalMode.default("auto").describe("manual | accept-edits | auto | bypass"),
     sandbox: z.boolean().default(false).describe("confine write leaves to cwd + sandboxDirs (default: unconfined, like the caller)"),
@@ -102,7 +102,7 @@ export const launch = defineOp({
       {
         programPath: input.programPath,
         cwd: input.cwd,
-        brief: input.brief,
+        context: input.context,
         allowWrites: input.allowWrites,
         approvalMode: input.approvalMode,
         sandbox: input.sandbox,
@@ -369,7 +369,7 @@ export const getTrace = defineOp({
     const traces = readTraces(input.runId).map((t) => {
       if (t.t !== "leaf") return t;
       const bound = (v?: string) => (v && v.length > 16_384 ? v.slice(0, 16_384) + `…[truncated]` : v);
-      return { ...t, prompt: bound(t.prompt), brief: bound(t.brief), error: bound(t.error) };
+      return { ...t, prompt: bound(t.prompt), context: bound(t.context), error: bound(t.error) };
     });
     return { status: s, traces };
   },

@@ -39,7 +39,6 @@ function makeReq(
     seq: 1,
     prompt: "do the thing",
     system: "you are a test leaf",
-    brief: "orc harness test",
     readOnly: true,
     cwd,
     approvalMode: "auto",
