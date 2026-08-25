@@ -24,7 +24,6 @@ function launchOpts(program: string, extra: Record<string, unknown> = {}) {
   return {
     programPath: FIX(program),
     cwd: home,
-    brief: "test brief",
     ...extra,
   } as Parameters<typeof prepareRun>[0];
 }

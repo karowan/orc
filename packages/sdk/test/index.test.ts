@@ -28,7 +28,6 @@ function writeRunningRun(runId: string): void {
     programPath: path.join(home, "program.orc.ts"),
     programSha256: "deadbeef",
     cwd: home,
-    brief: "test",
     allowWrites: false,
     approvalMode: "auto",
     sandbox: false,
@@ -104,7 +103,7 @@ if (process.argv.includes("--capabilities")) {
     try {
       // This intentionally supplies only caller-required fields: LaunchInput
       // is the Zod input type, so output defaults remain optional.
-      const run = await new Orc({ cwd: configDir }).launch({ programPath, brief: "finish immediately" });
+      const run = await new Orc({ cwd: configDir }).launch({ programPath });
       expect((await run.wait(10)).state).toBe("completed");
       expect(await run.result()).toEqual({ custom: true });
     } finally {

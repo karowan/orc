@@ -62,7 +62,6 @@ function writeRun(
     programPath: path.join(home, "program.orc.ts"),
     programSha256: "deadbeef",
     cwd: home,
-    brief: "test",
     allowWrites: false,
     approvalMode: "auto",
     sandbox: false,
@@ -238,7 +237,7 @@ export default async ({ ext, phase }) =>
     );
     const built = await buildRegistry({ cwd: configDir });
     const manifest = await prepareRun(
-      { programPath, cwd: home, brief: "durable report gate test" },
+      { programPath, cwd: home },
       built,
     );
     const child = runSupervisorChild(manifest.runId, configDir, async () => undefined);
@@ -310,7 +309,7 @@ export default async ({ ext, phase }) =>
     try {
       const built = await buildRegistry({ cwd: configDir });
       const manifest = await prepareRun(
-        { programPath, cwd: home, brief: "startup signal test" },
+        { programPath, cwd: home },
         built,
       );
 

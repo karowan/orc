@@ -19,7 +19,6 @@ function req(overrides: Partial<LeafRequest> = {}): LeafRequest {
     seq: 1,
     prompt: "do it",
     system: "system",
-    brief: "brief",
     readOnly: true,
     cwd: "/workspace",
     approvalMode: "auto",

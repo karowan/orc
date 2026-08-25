@@ -78,7 +78,7 @@ async function launch(reg: Registry) {
     `export default async ({ agent }: any) => agent("do it", { id: "leaf" });\n`,
   );
   return prepareRun(
-    { programPath: program, cwd: home, brief: "b", approvalMode: "manual" },
+    { programPath: program, cwd: home, approvalMode: "manual" },
     reg,
   );
 }
@@ -163,7 +163,7 @@ describe("permission bubbling (end to end)", () => {
       `export default async ({ ext }: any) => ext.presented_gate({ hidden: "value" });\n`,
     );
     const manifest = await prepareRun(
-      { programPath: program, cwd: home, brief: "b" },
+      { programPath: program, cwd: home },
       reg,
     );
     const running = superviseRun(manifest.runId, reg);
@@ -278,7 +278,7 @@ describe("permission bubbling (end to end)", () => {
       `export default async ({ ext }: any) => ext.malformed_presentation({});\n`,
     );
     const manifest = await prepareRun(
-      { programPath: program, cwd: home, brief: "b" },
+      { programPath: program, cwd: home },
       reg,
     );
 
@@ -312,7 +312,7 @@ describe("permission bubbling (end to end)", () => {
       `export default async ({ ext }: any) => ext.gate({});\n`,
     );
     const manifest = await prepareRun(
-      { programPath: program, cwd: home, brief: "b" },
+      { programPath: program, cwd: home },
       reg,
     );
     const runPromise = superviseRun(manifest.runId, reg);
@@ -358,7 +358,6 @@ describe("permission bubbling (end to end)", () => {
       {
         programPath: program,
         cwd: home,
-        brief: "b",
         idleTimeout: 25,
       },
       reg,
@@ -572,7 +571,7 @@ describe("permission bubbling (end to end)", () => {
          parallel([{prompt:"a"},{prompt:"b"},{prompt:"c"},{prompt:"d"}]);\n`,
     );
     const manifest = await prepareRun(
-      { programPath: program, cwd: home, brief: "b", approvalMode: "manual" },
+      { programPath: program, cwd: home, approvalMode: "manual" },
       reg,
     );
     const runPromise = superviseRun(manifest.runId, reg);

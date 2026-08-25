@@ -315,7 +315,8 @@ export interface LeafRequest {
   id?: string; // optional human trace label
   prompt: string;
   system: string;
-  brief: string;
+  /** Composed run-level + per-leaf context, verbatim; absent when both are empty. */
+  context?: string;
   schema?: Json; // JSON Schema for structured output
   model?: string;
   reasoningEffort?: string;
@@ -430,6 +431,8 @@ export interface ExtensionLeaf {
 export interface ThunkSpec {
   kind: "agent" | `ext:${string}`;
   prompt?: string; // agent kind
+  /** Opaque per-leaf background, composed after the run-level context; `prompt` is the task. */
+  context?: string; // agent kind
   payload?: Json; // ext kind
   id?: string;
   harness?: string;
@@ -560,7 +563,7 @@ export interface LeafTraceRecord {
   startMs: number;
   endMs?: number;
   prompt?: string; // resolved prompt (bounded)
-  brief?: string;
+  context?: string; // composed context the leaf received (bounded)
   output?: Json; // bounded copy of structured output
   error?: string;
   sessionId?: string;
@@ -630,7 +633,7 @@ export interface RunManifest {
   programPath: string;
   programSha256: string;
   cwd: string; // canonicalized
-  brief: string;
+  context?: string; // run-level context fanned out to every leaf
   allowWrites: boolean;
   approvalMode: ApprovalMode;
   sandbox: boolean; // confine write leaves to cwd + sandboxDirs (default false)

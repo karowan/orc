@@ -21,7 +21,6 @@ describe("kill -9 resume", () => {
       {
         programPath: path.join(__dirname, "fixtures", "lanes.orc.ts"),
         cwd: home,
-        brief: "kill9 test",
       },
       registry,
     );

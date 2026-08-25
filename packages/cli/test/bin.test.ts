@@ -24,46 +24,41 @@ function run(...args: string[]): string {
   });
 }
 
+/** Launch a trivial program to completion and read back its manifest. */
+function launch(...extraArgs: string[]): Record<string, unknown> {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "orc-cli-"));
+  homes.push(home);
+  const program = path.join(home, "done.orc.ts");
+  const orcHome = path.join(home, ".orc");
+  fs.writeFileSync(program, "export default async () => ({ done: true });\n");
+
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      ["--import", TSX, CLI, "--json", "launch", "--program-path", program, "--wait", ...extraArgs],
+      {
+        cwd: home,
+        encoding: "utf8",
+        env: { ...process.env, ORC_HOME: orcHome },
+        timeout: 30_000,
+      },
+    ),
+  ) as { runId: string };
+  return JSON.parse(
+    fs.readFileSync(path.join(orcHome, "runs", result.runId, "manifest.json"), "utf8"),
+  ) as Record<string, unknown>;
+}
+
 describe("generated CLI flags", () => {
   it("collects repeated array flags in order", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "orc-cli-"));
-    homes.push(home);
-    const program = path.join(home, "done.orc.ts");
-    const orcHome = path.join(home, ".orc");
-    fs.writeFileSync(program, "export default async () => ({ done: true });\n");
-
-    const result = JSON.parse(
-      execFileSync(
-        process.execPath,
-        [
-          "--import",
-          TSX,
-          CLI,
-          "--json",
-          "launch",
-          "--program-path",
-          program,
-          "--brief",
-          "test",
-          "--wait",
-          "--sandbox-dirs",
-          "first",
-          "--sandbox-dirs",
-          "second",
-        ],
-        {
-          cwd: home,
-          encoding: "utf8",
-          env: { ...process.env, ORC_HOME: orcHome },
-          timeout: 30_000,
-        },
-      ),
-    ) as { runId: string };
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(orcHome, "runs", result.runId, "manifest.json"), "utf8"),
-    ) as { sandboxDirs: string[] };
-
+    // No --context: the run-level slot is optional.
+    const manifest = launch("--sandbox-dirs", "first", "--sandbox-dirs", "second");
     expect(manifest.sandboxDirs).toEqual(["first", "second"]);
+    expect(manifest).not.toHaveProperty("context");
+  });
+
+  it("carries the optional --context into the manifest", () => {
+    expect(launch("--context", "cli ctx").context).toBe("cli ctx");
   });
 
   it("accepts --no-* for booleans whose Zod default is true", () => {

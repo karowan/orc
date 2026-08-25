@@ -36,13 +36,14 @@ describe("orc mcp (stdio)", () => {
       expect(byName.get("orc_respond")!.annotations?.readOnlyHint).toBe(false);
       expect(byName.get("orc_status")!.annotations?.readOnlyHint).toBe(true);
       expect(byName.get("orc_wait")!.annotations?.readOnlyHint).toBe(true);
-      // schema plumbed from zod: launch requires programPath + brief
+      // schema plumbed from zod: launch requires only programPath; context is optional
       const launchSchema = byName.get("orc_launch")!.inputSchema as {
         required?: string[];
         properties?: Record<string, unknown>;
       };
       expect(launchSchema.required).toContain("programPath");
-      expect(launchSchema.required).toContain("brief");
+      expect(launchSchema.required).not.toContain("context");
+      expect(launchSchema.properties).toHaveProperty("context");
       expect(launchSchema.properties).toHaveProperty("cwd");
       const respondSchema = byName.get("orc_respond")!.inputSchema as {
         required?: string[];

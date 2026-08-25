@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 async function run(program: string, registry = makeRegistry(makeFakeHarness()), extra: Record<string, unknown> = {}) {
-  const manifest = await prepareRun({ programPath: FIX(program), cwd: home, brief: "b", ...extra }, registry);
+  const manifest = await prepareRun({ programPath: FIX(program), cwd: home, ...extra }, registry);
   const status = await superviseRun(manifest.runId, registry);
   return { manifest, status };
 }
@@ -403,7 +403,7 @@ describe("read-only leaf retry (supervisor retry table)", () => {
       }),
     );
     const manifest = await prepareRun(
-      { programPath: FIX("retry.orc.ts"), cwd: home, brief: "b" },
+      { programPath: FIX("retry.orc.ts"), cwd: home },
       registry,
     );
     const status = await superviseRun(
@@ -479,7 +479,7 @@ describe("structured-output schema re-ask", () => {
     };
     const registry = makeRegistry(harness);
     const manifest = await prepareRun(
-      { programPath: FIX("reask-then-fail.orc.ts"), cwd: home, brief: "b" },
+      { programPath: FIX("reask-then-fail.orc.ts"), cwd: home },
       registry,
     );
     const first = await superviseRun(manifest.runId, registry);
@@ -517,7 +517,7 @@ describe("supervisor shutdown", () => {
       ]),
     });
     const manifest = await prepareRun(
-      { programPath: FIX("never-ext.orc.ts"), cwd: home, brief: "b" },
+      { programPath: FIX("never-ext.orc.ts"), cwd: home },
       registry,
     );
     const running = superviseRun(manifest.runId, registry);
@@ -585,7 +585,6 @@ describe("supervisor shutdown", () => {
       {
         programPath: FIX("mixed-never.orc.ts"),
         cwd: home,
-        brief: "b",
         allowWrites: true,
       },
       registry,
@@ -617,7 +616,6 @@ describe("supervisor shutdown", () => {
       {
         programPath: FIX("never-ext.orc.ts"),
         cwd: home,
-        brief: "b",
         idleTimeout: 20,
       },
       registry,
@@ -655,7 +653,6 @@ describe("supervisor shutdown", () => {
       {
         programPath: FIX("retry.orc.ts"),
         cwd: home,
-        brief: "b",
         idleTimeout: 800,
       },
       registry,
@@ -687,7 +684,6 @@ describe("supervisor shutdown", () => {
       {
         programPath: FIX("never-ext.orc.ts"),
         cwd: home,
-        brief: "b",
         idleTimeout: 20,
       },
       registry,

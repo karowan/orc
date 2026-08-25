@@ -71,7 +71,6 @@ function writeRun(runId: string, options: { completed?: boolean } = {}): void {
     programPath: path.join(home, "program.orc.ts"),
     programSha256: "deadbeef",
     cwd: home,
-    brief: "test",
     allowWrites: false,
     approvalMode: "auto",
     sandbox: false,

@@ -31,7 +31,6 @@ describe.skipIf(!live)("codexHarness (live)", () => {
         seq: 1,
         prompt: 'Reply with exactly the JSON {"ok":true}',
         system: "",
-        brief: "",
         schema: {
           type: "object",
           properties: { ok: { type: "boolean" } },

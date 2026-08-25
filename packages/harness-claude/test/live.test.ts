@@ -53,7 +53,6 @@ describe.skipIf(!LIVE)("claude harness (live)", () => {
       seq: 0,
       prompt: 'Reply with exactly the JSON {"ok": true}. Do not use any tools.',
       system: "You are a test leaf. Answer directly.",
-      brief: "test",
       schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
       readOnly: true,
       cwd,

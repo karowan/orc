@@ -65,7 +65,7 @@ function boundTrace(rec: TraceRecord): TraceRecord {
   if (rec.t !== "leaf") return rec;
   const out: LeafTraceRecord = { ...rec };
   if (out.prompt !== undefined) out.prompt = boundString(out.prompt);
-  if (out.brief !== undefined) out.brief = boundString(out.brief);
+  if (out.context !== undefined) out.context = boundString(out.context);
   if (out.error !== undefined) out.error = boundString(out.error);
   if (out.output !== undefined) {
     const serialized = JSON.stringify(out.output);

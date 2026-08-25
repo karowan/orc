@@ -75,7 +75,7 @@ The canonical rationale, invariants, and accepted tradeoffs live in
 ## CLI
 
 ```
-orc launch --program-path p.orc.ts --brief "..." [--cwd /path] [--allow-writes] [--wait]
+orc launch --program-path p.orc.ts [--context "..."] [--cwd /path] [--allow-writes] [--wait]
 orc validate --program-path p.orc.ts    # compile + first-frontier preview, no run
 orc status --run-id <id>                 # body-free projection
 orc wait --run-id <id> --timeout-seconds 300
