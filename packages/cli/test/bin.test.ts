@@ -57,6 +57,13 @@ describe("generated CLI flags", () => {
     expect(manifest).not.toHaveProperty("context");
   });
 
+  it("resolves the generated --read-dirs grants into the manifest, in order", () => {
+    const readDirs = launch("--read-dirs", "docs-a", "--read-dirs", "docs-b").readDirs as string[];
+    // The child's cwd may be a canonicalized tmpdir, so pin shape and order only.
+    expect(readDirs.every((dir) => path.isAbsolute(dir))).toBe(true);
+    expect(readDirs.map((dir) => path.basename(dir))).toEqual(["docs-a", "docs-b"]);
+  });
+
   it("carries the optional --context into the manifest", () => {
     expect(launch("--context", "cli ctx").context).toBe("cli ctx");
   });

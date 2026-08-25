@@ -336,6 +336,15 @@ export interface LeafRequest {
    */
   sandbox?: boolean;
   sandboxDirs?: string[];
+  /**
+   * Run-level read grants: directories the launcher materialized files into and
+   * referenced from context text. Read-only — a harness keeps them readable and
+   * inside the leaf's permission scope so a leaf following a pointer never
+   * stalls on approval, and must NEVER add them to any write root, write-allow
+   * list, or sandbox write gate. A harness that does not confine reads may
+   * ignore the field.
+   */
+  readDirs?: string[];
   /** Permit outbound network while retaining the requested filesystem sandbox. */
   networkAccess?: boolean;
 }
@@ -638,6 +647,7 @@ export interface RunManifest {
   approvalMode: ApprovalMode;
   sandbox: boolean; // confine write leaves to cwd + sandboxDirs (default false)
   sandboxDirs: string[]; // extra writable roots when sandboxed (cache dirs, etc.)
+  readDirs?: string[]; // read-only grants for launcher-materialized files; launch-resolved, absent when none
   networkAccess: boolean; // outbound network inside the sandbox (default false)
   maxParallel: number;
   idleTimeoutMs: number | false;

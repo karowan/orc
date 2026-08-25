@@ -89,6 +89,7 @@ export const launch = defineOp({
     approvalMode: ApprovalMode.default("auto").describe("manual | accept-edits | auto | bypass"),
     sandbox: z.boolean().default(false).describe("confine write leaves to cwd + sandboxDirs (default: unconfined, like the caller)"),
     sandboxDirs: z.array(z.string()).optional().describe("extra writable roots when sandboxed (e.g. cache dirs outside the workspace)"),
+    readDirs: z.array(z.string()).optional().describe("read-only directories granted to every leaf, for files referenced from context"),
     networkAccess: z.boolean().default(false).describe("permit outbound network while retaining filesystem sandboxing"),
     maxParallel: z.number().int().min(1).max(64).optional(),
     idleTimeoutSeconds: z.number().int().optional().describe("run default for the per-call output-idle watchdog; 0 disables"),
@@ -108,6 +109,7 @@ export const launch = defineOp({
         approvalMode: input.approvalMode,
         sandbox: input.sandbox,
         sandboxDirs: input.sandboxDirs,
+        readDirs: input.readDirs,
         networkAccess: input.networkAccess,
         maxParallel: input.maxParallel,
         idleTimeout:

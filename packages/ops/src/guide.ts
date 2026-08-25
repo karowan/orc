@@ -160,9 +160,10 @@ export const ORC_CLI_GUIDE = `
 
 \`--context\` (optional) is shared context added to every leaf. Common launch flags:
 \`--allow-writes\`, \`--approval-mode manual|accept-edits|auto|bypass\`,
-\`--sandbox\`, \`--harness claude|codex\`, \`--budget <usd>\` (fail the run after
-observed estimated cost exceeds this; concurrent work may overshoot), \`--wait\`
-(block for the result instead of running in the background).
+\`--sandbox\`, \`--read-dirs <dir...>\` (read-only grants for materialized files
+referenced from context), \`--harness claude|codex\`, \`--budget <usd>\` (fail the
+run after observed estimated cost exceeds this; concurrent work may overshoot),
+\`--wait\` (block for the result instead of running in the background).
 
 ## 3. Watch and collect
 
