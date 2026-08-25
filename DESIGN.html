@@ -779,7 +779,7 @@ export default program;</code></pre>
           <article class="panel">
             <span class="label invariant">Isolation</span>
             <h3>Agent context starts fresh</h3>
-            <p>Each invocation gets its own prompt/session context and the shared brief. Program-level results move as explicit JSON; leaves may still observe shared filesystem or external state.</p>
+            <p>Each invocation gets its own prompt/session context plus any launch- and call-level context. Program-level results move as explicit JSON; leaves may still observe shared filesystem or external state.</p>
           </article>
           <article class="panel">
             <span class="label tradeoff">Constraint</span>
