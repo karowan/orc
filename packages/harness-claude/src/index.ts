@@ -142,6 +142,7 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
     !req.readOnly && (req.approvalMode === "manual" || req.approvalMode === "accept-edits");
   const sandboxWrites = req.sandbox === true && !req.readOnly;
   const roots = sandboxRoots(req);
+  const readableDirs = additionalDirs(req, roots);
   const permissionMode: PermissionMode =
     req.readOnly
       ? "dontAsk"
@@ -216,7 +217,7 @@ async function* invokeSdk(req: LeafRequest, ctx: HarnessContext): AsyncIterable<
       ? { allowDangerouslySkipPermissions: true }
       : {}),
     ...(req.readOnly ? { disallowedTools: READ_ONLY_DISALLOWED_TOOLS } : {}),
-    ...(roots.length > 1 ? { additionalDirectories: roots.slice(1) } : {}),
+    ...(readableDirs.length > 0 ? { additionalDirectories: readableDirs } : {}),
     ...(sandboxWrites
       ? {
           sandbox: {
@@ -432,6 +433,22 @@ function sandboxRoots(req: LeafRequest): string[] {
       ),
     ),
   ];
+}
+
+/**
+ * Directories the leaf may read without an approval stall: the sandbox roots
+ * beyond cwd, plus the run's read grants. Read-only by contract — never fed to
+ * the write-allow list or the sandboxed write gate, which stay on
+ * sandboxRoots() alone. Grants arrive absolute from launch, so normalizing and
+ * dropping cwd here is defensive only.
+ */
+function additionalDirs(req: LeafRequest, writeRoots: string[]): string[] {
+  const grants = (req.readDirs ?? []).map((dir) =>
+    path.normalize(path.isAbsolute(dir) ? dir : path.resolve(req.cwd, dir)),
+  );
+  return [...new Set([...writeRoots.slice(1), ...grants])].filter(
+    (dir) => dir !== writeRoots[0],
+  );
 }
 
 function userAwsCredentialExport(): string | undefined {

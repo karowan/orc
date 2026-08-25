@@ -220,6 +220,8 @@ export interface LaunchOptions {
   approvalMode?: RunManifest["approvalMode"];
   sandbox?: boolean;
   sandboxDirs?: string[];
+  /** Read-only directories granted to every leaf, for files referenced from context. */
+  readDirs?: string[];
   networkAccess?: boolean;
   maxParallel?: number;
   idleTimeout?: number | false; // ms
@@ -266,6 +268,11 @@ export async function prepareRun(
   ) {
     throw new Error("maxContextBytes must be a positive integer");
   }
+  // Read grants resolve like cwd — against the caller's working directory — and
+  // nothing more. Existence is the launcher's concern: it materialized the files
+  // and owns their lifetime, so no stat/realpath here (cwd is validated only
+  // because orc itself must operate there).
+  const readDirs = opts.readDirs?.map((dir) => path.resolve(dir));
   const manifest: RunManifest = {
     runId: newRunId(
       opts.name ?? path.basename(opts.programPath).replace(/\.[^.]+$/, ""),
@@ -279,6 +286,7 @@ export async function prepareRun(
     approvalMode: opts.approvalMode ?? "auto",
     sandbox: opts.sandbox ?? false,
     sandboxDirs: opts.sandboxDirs ?? [],
+    readDirs,
     networkAccess: opts.networkAccess ?? false,
     maxParallel: Math.min(opts.maxParallel ?? DEFAULT_POLICY.maxParallel, 64),
     idleTimeoutMs: opts.idleTimeout ?? 15 * 60_000,
@@ -1268,6 +1276,7 @@ class Supervisor {
         idleTimeoutMs: leaf.idleTimeoutMs,
         sandbox: this.manifest.sandbox,
         sandboxDirs: this.manifest.sandboxDirs,
+        readDirs: this.manifest.readDirs,
         networkAccess,
       };
 

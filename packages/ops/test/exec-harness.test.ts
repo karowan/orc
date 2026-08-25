@@ -60,6 +60,7 @@ describe("exec harness protocol", () => {
       prompt: "do it",
       system: "system",
       context: "run ctx\n\nleaf ctx",
+      readDirs: ["/grants/docs"],
       readOnly: true,
       cwd: "/tmp",
       approvalMode: "auto",
@@ -76,6 +77,8 @@ describe("exec harness protocol", () => {
     expect(events).toEqual([{ kind: "result", output: { ok: true } }]);
     const wire = JSON.parse(seen.stdin!) as Record<string, unknown>;
     expect(wire.context).toBe("run ctx\n\nleaf ctx");
+    // The whole request is serialized, so a run's read grants ride along verbatim.
+    expect(wire.readDirs).toEqual(["/grants/docs"]);
     expect("brief" in wire).toBe(false);
   });
 });

@@ -47,6 +47,11 @@ describe("orc mcp (stdio)", () => {
       expect(launchSchema.properties).toHaveProperty("cwd");
       expect(launchSchema.properties).toHaveProperty("maxContextBytes");
       expect(launchSchema.required).not.toContain("maxContextBytes");
+      expect(launchSchema.required).not.toContain("readDirs");
+      expect(launchSchema.properties!.readDirs).toMatchObject({
+        type: "array",
+        items: { type: "string" },
+      });
       const respondSchema = byName.get("orc_respond")!.inputSchema as {
         required?: string[];
         properties?: Record<string, unknown>;

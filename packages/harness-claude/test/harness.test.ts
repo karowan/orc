@@ -212,6 +212,39 @@ describe("claude local policy", () => {
     expect(options.canUseTool).toBeUndefined();
   });
 
+  it("keeps declared read grants in scope for a leaf with no sandbox roots", async () => {
+    sdk.query.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {},
+    });
+
+    await collect(req({ readDirs: ["/grants/docs"] }), context(unusedExecutor));
+
+    // A read-only, non-sandboxed leaf previously had no additionalDirectories at
+    // all: following a pointer out of context text would stall on approval.
+    const options = (sdk.query.mock.calls.at(-1)![0] as { options: Options }).options;
+    expect(options.additionalDirectories).toEqual(["/grants/docs"]);
+    expect(options.sandbox).toBeUndefined();
+  });
+
+  it("joins read grants with the sandbox-root-derived readable dirs", async () => {
+    sdk.query.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {},
+    });
+
+    await collect(
+      req({
+        sandbox: true,
+        cwd: "/workspace",
+        sandboxDirs: ["/workspace/package-c"],
+        readDirs: ["/grants/docs"],
+      }),
+      context(unusedExecutor),
+    );
+
+    const options = (sdk.query.mock.calls.at(-1)![0] as { options: Options }).options;
+    expect(options.additionalDirectories).toEqual(["/workspace/package-c", "/grants/docs"]);
+  });
+
   it("retains explicit bypass power for write leaves", async () => {
     sdk.query.mockReturnValueOnce({
       async *[Symbol.asyncIterator]() {},
@@ -237,6 +270,7 @@ describe("claude local policy", () => {
         sandbox: true,
         cwd: "/workspace",
         sandboxDirs: ["../cache", "/opt/build-cache"],
+        readDirs: ["/grants/docs"],
       }),
       context(unusedExecutor),
     );
@@ -246,7 +280,8 @@ describe("claude local policy", () => {
     expect(options.strictMcpConfig).toBe(true);
     expect(options.permissionMode).toBe("default");
     expect(options.canUseTool).toBeTypeOf("function");
-    expect(options.additionalDirectories).toEqual(["/cache", "/opt/build-cache"]);
+    // The grant is readable but never writable: cwd + sandboxDirs alone.
+    expect(options.additionalDirectories).toEqual(["/cache", "/opt/build-cache", "/grants/docs"]);
     expect(options.sandbox).toEqual({
       enabled: true,
       failIfUnavailable: true,
@@ -254,6 +289,9 @@ describe("claude local policy", () => {
       filesystem: { allowWrite: ["/workspace", "/cache", "/opt/build-cache"] },
     });
     const callbackOptions = { signal: new AbortController().signal };
+    await expect(
+      options.canUseTool!("Edit", { file_path: "/grants/docs/note.md" }, callbackOptions),
+    ).resolves.toMatchObject({ behavior: "deny" });
     await expect(
       options.canUseTool!("Edit", { file_path: "/workspace/src/a.ts" }, callbackOptions),
     ).resolves.toMatchObject({ behavior: "allow" });
