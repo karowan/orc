@@ -643,6 +643,8 @@ export interface RunManifest {
   idleTimeoutMs: number | false;
   /** Reactive USD cap: the run fails once observed estimated cost exceeds this. */
   budgetUsd?: number;
+  /** Spec-time cap: a leaf whose composed context exceeds this many UTF-8 bytes fails before dispatch. */
+  maxContextBytes?: number;
   defaultHarness: string;
   createdAtMs: number;
   orcVersion: string;
