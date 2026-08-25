@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-harness-claude",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
