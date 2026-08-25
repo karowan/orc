@@ -61,6 +61,10 @@ describe("generated CLI flags", () => {
     expect(launch("--context", "cli ctx").context).toBe("cli ctx");
   });
 
+  it("derives --max-context-bytes and carries it as a number", () => {
+    expect(launch("--max-context-bytes", "4096").maxContextBytes).toBe(4096);
+  });
+
   it("accepts --no-* for booleans whose Zod default is true", () => {
     const result = JSON.parse(run("guide", "--no-probe")) as { guide: string };
     expect(result.guide).toContain("# orc — how to write and run a program");
@@ -79,5 +83,9 @@ describe("generated CLI flags", () => {
     expect(respond?.inputSchema.properties).toHaveProperty("action");
     expect(respond?.inputSchema.properties).toHaveProperty("behavior");
     expect(respond?.inputSchema.required).toEqual(["runId", "approvalId"]);
+
+    const launchOp = catalog.find((entry) => entry.name === "launch");
+    expect(launchOp?.inputSchema.properties).toHaveProperty("maxContextBytes");
+    expect(launchOp?.inputSchema.required ?? []).not.toContain("maxContextBytes");
   });
 });

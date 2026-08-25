@@ -93,6 +93,7 @@ export const launch = defineOp({
     maxParallel: z.number().int().min(1).max(64).optional(),
     idleTimeoutSeconds: z.number().int().optional().describe("run default for the per-call output-idle watchdog; 0 disables"),
     budget: z.number().positive().optional().describe("reactive USD cap: fail the run once observed estimated cost exceeds this (may overshoot)"),
+    maxContextBytes: z.number().int().positive().optional().describe("fail any leaf whose composed context exceeds this many UTF-8 bytes, at spec time before dispatch"),
     name: z.string().optional(),
     harness: z.string().optional().describe("default harness override (else caller affinity → codex)"),
     wait: z.boolean().default(false).describe("supervise in the foreground and return the final status"),
@@ -116,6 +117,7 @@ export const launch = defineOp({
               ? false
               : input.idleTimeoutSeconds * 1000,
         budgetUsd: input.budget,
+        maxContextBytes: input.maxContextBytes,
         name: input.name,
         defaultHarness: input.harness,
       },

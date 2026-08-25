@@ -172,3 +172,131 @@ describe("context delivery", () => {
     expect(resumed.state).toBe("completed");
   });
 });
+
+describe("maxContextBytes", () => {
+  /**
+   * Run to whatever terminal state (no completion assertion), with a harness
+   * that logs every invocation — an empty log is proof at the dispatch boundary.
+   */
+  async function runCapped(program: string, extra: Record<string, unknown> = {}) {
+    const invocationLog = path.join(home, "invocations.log");
+    const registry = makeRegistry(
+      makeFakeHarness({
+        invocationLog,
+        result: (req: LeafRequest): Seen => ({ context: req.context ?? null, system: req.system }),
+      }),
+    );
+    const manifest = await prepareRun({ programPath: FIX(program), cwd: home, ...extra }, registry);
+    const status = await superviseRun(manifest.runId, registry);
+    return {
+      manifest,
+      status,
+      invocations: fs.existsSync(invocationLog)
+        ? fs.readFileSync(invocationLog, "utf8").split("\n").filter(Boolean)
+        : [],
+      /** The first errored leaf trace, which carries the bounded failure message. */
+      errored: readTraces(manifest.runId).find((t) => t.t === "leaf" && t.status === "error"),
+      sole: () => readResult(runPaths(manifest.runId), status.resultSha!) as unknown as Seen,
+      tracedContext: () => {
+        const leaf = readTraces(manifest.runId).find((t) => t.t === "leaf");
+        return leaf?.t === "leaf" ? (leaf.context ?? "") : "";
+      },
+    };
+  }
+
+  it("fails an oversize leaf at spec time, naming its sequence and both byte sizes", async () => {
+    const { manifest, status, invocations, errored, tracedContext } = await runCapped(
+      "context-none.orc.ts",
+      { context: "x".repeat(5000), maxContextBytes: 2048 },
+    );
+    expect(status.state).toBe("failed");
+    const seq = errored?.t === "leaf" ? errored.seq : undefined;
+    const error = errored?.t === "leaf" ? (errored.error ?? "") : "";
+    expect(seq).toBeDefined();
+    expect(error).toContain(`leaf ${seq}`); // no authored id → the sequence
+    expect(error).toContain("5000"); // composed size
+    expect(error).toContain("2048"); // configured cap
+    expect(status.error).toContain("5000");
+    expect(status.error).toContain("2048");
+    // Never dispatched, on any attempt: no harness invocation, so no model spend.
+    expect(invocations).toEqual([]);
+    expect(readJournal(manifest.runId).some((r) => r.t === "done" && r.status === "ok")).toBe(false);
+    // A cap below 4 KiB does not tighten the trace-copy bound.
+    expect(tracedContext().startsWith("x".repeat(4 * 1024))).toBe(true);
+    expect(tracedContext()).toContain("(truncated");
+  });
+
+  it("names the leaf by its authored id when the program set one", async () => {
+    const { status, invocations, errored } = await runCapped("context-id.orc.ts", {
+      maxContextBytes: 8,
+    });
+    expect(status.state).toBe("failed");
+    const error = errored?.t === "leaf" ? (errored.error ?? "") : "";
+    expect(error).toContain('leaf "capped"');
+    expect(error).toContain("64");
+    expect(error).toContain("8");
+    expect(invocations).toEqual([]);
+  });
+
+  it("delivers a composed context exactly equal to the cap", async () => {
+    const ctx = "run ctx\n\n leaf ctx ";
+    const { status, invocations, sole } = await runCapped("context-leaf.orc.ts", {
+      context: "run ctx",
+      maxContextBytes: Buffer.byteLength(ctx, "utf8"),
+    });
+    expect(status.state).toBe("completed"); // strictly greater fails; equal passes
+    expect(sole().context).toBe(ctx);
+    expect(invocations.length).toBe(1);
+  });
+
+  it("measures UTF-8 bytes, not code units", async () => {
+    const ctx = "🙂".repeat(100);
+    expect(ctx.length).toBe(200); // a code-unit measurement would pass a cap of 300
+    const { status, errored } = await runCapped("context-none.orc.ts", {
+      context: ctx,
+      maxContextBytes: 300,
+    });
+    expect(status.state).toBe("failed");
+    const error = errored?.t === "leaf" ? (errored.error ?? "") : "";
+    expect(error).toContain("400");
+    expect(error).toContain("300");
+  });
+
+  it("leaves the 4 KiB trace-copy bound alone when the cap is well above it", async () => {
+    const big = "x".repeat(5000);
+    const { status, sole, tracedContext } = await runCapped("context-none.orc.ts", {
+      context: big,
+      maxContextBytes: 16 * 1024,
+    });
+    expect(status.state).toBe("completed");
+    expect(sole().context).toBe(big); // transport still verbatim
+    expect(tracedContext()).not.toBe(big);
+    expect(tracedContext().startsWith("x".repeat(4 * 1024))).toBe(true);
+    expect(tracedContext()).toContain("(truncated");
+  });
+
+  it("rejects a cap that is not a positive integer, before any run directory exists", async () => {
+    const registry = echoRegistry();
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        prepareRun(
+          { programPath: FIX("context-none.orc.ts"), cwd: home, maxContextBytes: bad },
+          registry,
+        ),
+      ).rejects.toThrow("maxContextBytes must be a positive integer");
+    }
+    expect(fs.existsSync(path.join(home, "runs"))).toBe(false);
+  });
+
+  it("carries a valid cap into the manifest and omits the key when unset", async () => {
+    const registry = echoRegistry();
+    const opts = { programPath: FIX("context-none.orc.ts"), cwd: home };
+    const capped = await prepareRun({ ...opts, maxContextBytes: 1024 }, registry);
+    expect(readManifest(capped.runId).maxContextBytes).toBe(1024);
+    const uncapped = await prepareRun(opts, registry);
+    const onDisk = JSON.parse(
+      fs.readFileSync(runPaths(uncapped.runId).manifest, "utf8"),
+    ) as object;
+    expect("maxContextBytes" in onDisk).toBe(false);
+  });
+});

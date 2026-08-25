@@ -224,6 +224,8 @@ export interface LaunchOptions {
   maxParallel?: number;
   idleTimeout?: number | false; // ms
   budgetUsd?: number; // reactive USD cap; the run fails once observed cost exceeds it
+  /** Spec-time cap: a leaf whose composed context exceeds this many UTF-8 bytes fails before dispatch. */
+  maxContextBytes?: number;
   name?: string;
   defaultHarness?: string;
 }
@@ -258,6 +260,12 @@ export async function prepareRun(
   if (opts.budgetUsd !== undefined && !(opts.budgetUsd > 0)) {
     throw new Error("budget must be a positive USD amount");
   }
+  if (
+    opts.maxContextBytes !== undefined &&
+    !(Number.isInteger(opts.maxContextBytes) && opts.maxContextBytes > 0)
+  ) {
+    throw new Error("maxContextBytes must be a positive integer");
+  }
   const manifest: RunManifest = {
     runId: newRunId(
       opts.name ?? path.basename(opts.programPath).replace(/\.[^.]+$/, ""),
@@ -275,6 +283,7 @@ export async function prepareRun(
     maxParallel: Math.min(opts.maxParallel ?? DEFAULT_POLICY.maxParallel, 64),
     idleTimeoutMs: opts.idleTimeout ?? 15 * 60_000,
     budgetUsd: opts.budgetUsd,
+    maxContextBytes: opts.maxContextBytes,
     defaultHarness: opts.defaultHarness ?? registry.defaultHarness,
     createdAtMs: Date.now(),
     orcVersion: ORC_VERSION,
@@ -1209,6 +1218,20 @@ class Supervisor {
           true,
         );
         return { status: "ok", value };
+      }
+
+      // Spec time is the only point the composed per-leaf total is knowable
+      // (thunks are dynamic), so an opt-in cap is charged here — before any
+      // harness invocation, and so before any model spend.
+      const cap = this.manifest.maxContextBytes;
+      if (cap !== undefined) {
+        const contextBytes = Buffer.byteLength(context, "utf8");
+        if (contextBytes > cap) {
+          throw new Error(
+            `leaf ${spec.id ? `"${spec.id}"` : seq} composed context is ` +
+              `${contextBytes} bytes, exceeding the ${cap}-byte maxContextBytes cap`,
+          );
+        }
       }
 
       const harnessName = spec.harness ?? this.manifest.defaultHarness;
