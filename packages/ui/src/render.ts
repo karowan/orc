@@ -1348,8 +1348,7 @@ function layoutBars(){
   if (el && el.getAttribute("data-elapsed-end")==="") el.textContent = fmtEl(now-(+el.getAttribute("data-elapsed-start")));
   return running;
 }
-function tick(){ if(layoutBars()) requestAnimationFrame(tick); }
-var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){ if(layoutBars()) setTimeout(tick,1000); }
 
 function postApproval(id, body){
   app.querySelectorAll('[data-approval="'+id+'"] .appr-actions').forEach(function(el){
@@ -1394,9 +1393,9 @@ window.orcSubmitAction = function(event){
 window.orcCancel = function(){ fetch(base + "/cancel", {method:"POST"}).then(function(){ setTimeout(refresh,500); }); };
 
 var es = new EventSource(base + "/events");
-es.onmessage = function(){ refresh(); if(!reduce) requestAnimationFrame(tick); };
+es.onmessage = refresh;
 es.onerror = function(){ es.close(); refresh(); };
-if(!reduce) requestAnimationFrame(tick);
+tick();
 `.trim();
 
 export function renderLivePage(opts: { manifest: RunManifest; status: RunStatus; traces: TraceRecord[]; journal?: JournalRecord[]; selectedSeq?: number }): string {

@@ -574,7 +574,7 @@ describe("renderReportHtml (responsive design)", () => {
     expect(html).toContain("height:100vh"); // page never grows
   });
 
-  it("live page wires row-click detail, phase toggle, esc/close, optimistic approvals, and rAF bars", () => {
+  it("live page wires row-click detail, phase toggle, esc/close, optimistic approvals, and bounded bar updates", () => {
     const { manifest, status, traces } = fixture();
     const html = renderLivePage({ manifest, status, traces });
     expect(html).toMatch(/class="c-row[^"]*" data-seq="\d+"/);
@@ -583,7 +583,8 @@ describe("renderReportHtml (responsive design)", () => {
     expect(html).toContain("orcCloseDrawer");
     expect(html).toContain('"/fragment"'); // detail via ?leaf= fragment fetch
     expect(html).toContain("selectedSeq");
-    expect(html).toContain("requestAnimationFrame");
+    expect(html).toContain("setTimeout(tick,1000)");
+    expect(html).not.toContain("requestAnimationFrame(tick)");
     expect(html).toContain("EventSource");
     expect(html).toContain("layoutBars");
     expect(html).toContain("orcApprove");
