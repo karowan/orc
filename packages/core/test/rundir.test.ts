@@ -14,6 +14,7 @@ import {
   livePgids,
   newRunId,
   readJsonl,
+  JsonlTail,
   readManifest,
   readSupervisorPid,
   runPaths,
@@ -249,5 +250,50 @@ describe("hard-cancel trail files", () => {
     expect(livePgids(paths)).toEqual([200]);
     appendPgid(paths, { t: "exit", pgid: 200, atMs: 4 });
     expect(livePgids(paths)).toEqual([]);
+  });
+});
+
+describe("JsonlTail", () => {
+  it("returns every record while parsing only appended bytes, across torn lines and split characters", () => {
+    const file = path.join(home, "tail.jsonl");
+    const tail = new JsonlTail<{ s: string }>(file);
+    expect(tail.read()).toEqual([]); // no file yet
+    fs.writeFileSync(file, '{"s":"one"}\n{"s":"tw');
+    expect(tail.read()).toEqual([{ s: "one" }]);
+    // Finish the torn record in two appends that split the two-byte "é".
+    const rest = Buffer.from('o é"}\n');
+    fs.appendFileSync(file, rest.subarray(0, 3));
+    expect(tail.read()).toEqual([{ s: "one" }]);
+    fs.appendFileSync(file, rest.subarray(3));
+    expect(tail.read()).toEqual([{ s: "one" }, { s: "two é" }]);
+    expect(tail.read()).toEqual([{ s: "one" }, { s: "two é" }]); // nothing new: no re-parse, same answer
+  });
+
+  it("re-reads from the start when the file changed behind it", () => {
+    const file = path.join(home, "tail.jsonl");
+    fs.writeFileSync(file, '{"n":1}\n{"n":2');
+    const tail = new JsonlTail<{ n: number }>(file);
+    expect(tail.read()).toEqual([{ n: 1 }]);
+    // The appender's crash recovery drops the torn tail before appending; the
+    // file is now longer than before, but our cached fragment is stale.
+    const out = new JsonlAppender<{ n: number }>(file);
+    out.append({ n: 3 }, { fsync: false });
+    out.close();
+    expect(tail.read()).toEqual([{ n: 1 }, { n: 3 }]);
+    // A rewrite that shrinks the file.
+    fs.writeFileSync(file, '{"n":9}\n');
+    expect(tail.read()).toEqual([{ n: 9 }]);
+    // Deletion.
+    fs.rmSync(file);
+    expect(tail.read()).toEqual([]);
+  });
+
+  it("reports committed corruption with the right line number", () => {
+    const file = path.join(home, "tail.jsonl");
+    fs.writeFileSync(file, '{"n":1}\n');
+    const tail = new JsonlTail<{ n: number }>(file);
+    tail.read();
+    fs.appendFileSync(file, '{"n":2}\nnot-json\n');
+    expect(() => tail.read()).toThrow(/line 3/);
   });
 });

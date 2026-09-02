@@ -99,27 +99,118 @@ export class JsonlAppender<T> {
   }
 }
 
+/**
+ * Parse the newline-terminated records in `data` onto `out`, decoding one line
+ * at a time so a file past V8's ~512MB string cap still reads. Bytes after the
+ * last newline are the one uncommitted crash fragment readers may ignore; they
+ * are left unconsumed.
+ */
+function parseJsonl<T>(
+  data: Buffer,
+  filePath: string,
+  firstLine: number,
+  out: T[],
+  map?: (record: T) => T,
+): { consumed: number; lines: number } {
+  let start = 0;
+  let line = firstLine;
+  for (let nl = data.indexOf(10, start); nl !== -1; nl = data.indexOf(10, start)) {
+    const text = data.toString("utf8", start, nl).trim();
+    start = nl + 1;
+    line++;
+    if (!text) continue;
+    let parsed: T;
+    try {
+      parsed = JSON.parse(text) as T;
+    } catch (err) {
+      throw new Error(
+        `malformed JSONL record in ${filePath} at line ${line}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    out.push(map ? map(parsed) : parsed);
+  }
+  return { consumed: start, lines: line };
+}
+
 /** Read a JSONL file tolerating a torn final line (crash-during-append). */
 export function readJsonl<T>(filePath: string): T[] {
   if (!fs.existsSync(filePath)) return [];
-  const raw = fs.readFileSync(filePath, "utf8");
   const out: T[] = [];
-  const lines = raw.split("\n");
-  // The final split element is either empty (committed newline) or the one
-  // uncommitted crash fragment readers are allowed to ignore.
-  lines.pop();
-  for (const [index, line] of lines.entries()) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+  parseJsonl<T>(fs.readFileSync(filePath), filePath, 0, out);
+  return out;
+}
+
+/**
+ * Incremental reader for an append-only JSONL file. `read()` returns every
+ * record so far but parses only the bytes appended since the previous call,
+ * so a monitor polling a long run pays for what changed, not the whole file.
+ * A torn tail is kept as bytes until it completes; a file that shrank or
+ * was rewritten behind the reader is re-read from the start.
+ */
+export class JsonlTail<T> {
+  /** Bytes read per pass: bounds the transient buffer even on a multi-GB legacy file. */
+  private static readonly CHUNK = 64 * 1024 * 1024;
+  private offset = 0;
+  private lines = 0;
+  private fragment: Buffer = Buffer.alloc(0);
+  private records: T[] = [];
+
+  /** `map` transforms each record as it is parsed (e.g. to share memory between revisions). */
+  constructor(
+    private readonly filePath: string,
+    private readonly map?: (record: T) => T,
+  ) {}
+
+  read(): T[] {
+    let size: number;
     try {
-      out.push(JSON.parse(trimmed) as T);
-    } catch (err) {
-      throw new Error(
-        `malformed JSONL record in ${filePath} at line ${index + 1}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      size = fs.statSync(this.filePath).size;
+    } catch {
+      this.reset();
+      return [];
+    }
+    if (size < this.offset || !this.fragmentStillOnDisk()) this.reset();
+    while (size > this.offset) {
+      const chunk = this.readFrom(this.offset, Math.min(size - this.offset, JsonlTail.CHUNK));
+      if (chunk.length === 0) break;
+      const data = this.fragment.length > 0 ? Buffer.concat([this.fragment, chunk]) : chunk;
+      const { consumed, lines } = parseJsonl<T>(data, this.filePath, this.lines, this.records, this.map);
+      this.fragment = Buffer.from(data.subarray(consumed)); // copy: don't pin the chunk
+      this.lines = lines;
+      this.offset += chunk.length;
+    }
+    return this.records.slice();
+  }
+
+  /** The appender truncates a torn tail before its next append; detect that our fragment is gone. */
+  private fragmentStillOnDisk(): boolean {
+    if (this.fragment.length === 0) return true;
+    const onDisk = this.readFrom(this.offset - this.fragment.length, this.fragment.length);
+    return onDisk.equals(this.fragment);
+  }
+
+  private readFrom(position: number, length: number): Buffer {
+    const fd = fs.openSync(this.filePath, "r");
+    try {
+      const buf = Buffer.allocUnsafe(length);
+      let read = 0;
+      while (read < length) {
+        const n = fs.readSync(fd, buf, read, length - read, position + read);
+        if (n === 0) break;
+        read += n;
+      }
+      return buf.subarray(0, read);
+    } finally {
+      fs.closeSync(fd);
     }
   }
-  return out;
+
+  private reset(): void {
+    this.offset = 0;
+    this.lines = 0;
+    this.fragment = Buffer.alloc(0);
+    this.records = [];
+  }
 }
 
 export interface RunPaths {

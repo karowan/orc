@@ -46,6 +46,18 @@ describe("MonitorServer", () => {
     expect(server.urlForRun(run.runId)).toBe(`${url}/runs/${run.runId}`);
   });
 
+  it("serves records appended to traces.jsonl after the first read", async () => {
+    const before = (await (await fetch(`${url}/runs/${run.runId}/trace.json`)).json()) as { traces: unknown[] };
+    fs.appendFileSync(
+      run.tracesPath,
+      JSON.stringify({ t: "event", atMs: Date.now(), event: { kind: "log", message: "appended after first read" } }) + "\n",
+    );
+    const after = (await (await fetch(`${url}/runs/${run.runId}/trace.json`)).json()) as { traces: unknown[] };
+    expect(after.traces.length).toBe(before.traces.length + 1);
+    const html = await (await fetch(`${url}/runs/${run.runId}/fragment`)).text();
+    expect(html).toContain("appended after first read");
+  });
+
   it("serves a run index at /", async () => {
     const res = await fetch(`${url}/`);
     expect(res.status).toBe(200);

@@ -9,15 +9,16 @@ import type {
   RunAttemptDetail,
   RunCostBasis,
   RunDetail,
-  RunManifest,
   RunGraph,
   RunLogDetail,
+  RunManifest,
   RunStageDetail,
   RunStageMetrics,
   RunState,
   RunStatus,
   RunTextPreview,
   RunToolCallDetail,
+  ToolCallTrace,
   TraceRecord,
   UiPresentation,
 } from "./contracts.js";
@@ -259,15 +260,30 @@ function bounded(
     : value;
 }
 
+/**
+ * Latest record per attempt (highest rev) with `toolCalls` folded across the
+ * attempt's records by id: each record carries the calls that changed since
+ * the previous one, and older runs carried the full list every time — both
+ * fold to the attempt's current list. Inputs are never mutated; a folded
+ * record is a shallow copy.
+ */
 function latestAttemptTraces(
   traces: TraceRecord[],
 ): Map<string, LeafTraceRecord> {
   const latest = new Map<string, LeafTraceRecord>();
+  const tools = new Map<string, Map<string, ToolCallTrace>>();
   for (const trace of traces) {
     if (trace.t !== "leaf") continue;
     const key = attemptKey(trace.seq, trace.attempt);
+    let fold = tools.get(key);
+    if (!fold) tools.set(key, (fold = new Map()));
+    for (const tc of trace.toolCalls ?? []) fold.set(tc.id, tc);
     const current = latest.get(key);
     if (!current || trace.rev >= current.rev) latest.set(key, trace);
+  }
+  for (const [key, rec] of latest) {
+    const fold = tools.get(key)!;
+    if (fold.size > 0) latest.set(key, { ...rec, toolCalls: [...fold.values()] });
   }
   return latest;
 }
@@ -1100,20 +1116,42 @@ export function projectRunGraph(
 }
 
 /** Supersession: highest attempt wins; within an attempt, highest rev wins. */
+/**
+ * Per-record compactor for long-lived trace readers: a closed tool call never
+ * changes again, so every later revision that repeats it (runs written before
+ * tool-call deltas repeated all of them, every time) shares the first parsed
+ * object instead of holding its own copy. Folding is unaffected: the same id
+ * still maps to the same, final, state. Legacy multi-GB traces fit in memory.
+ */
+export function makeTraceCompactor(): (record: TraceRecord) => TraceRecord {
+  const closed = new Map<string, Map<string, ToolCallTrace>>();
+  return (record) => {
+    if (record.t !== "leaf" || !record.toolCalls?.length) return record;
+    const key = attemptKey(record.seq, record.attempt);
+    let seen = closed.get(key);
+    if (!seen) closed.set(key, (seen = new Map()));
+    let shared = 0;
+    const toolCalls = record.toolCalls.map((tc) => {
+      const canonical = seen!.get(tc.id);
+      if (canonical) {
+        shared++;
+        return canonical;
+      }
+      if (tc.status !== "running") seen!.set(tc.id, tc);
+      return tc;
+    });
+    return shared > 0 ? { ...record, toolCalls } : record;
+  };
+}
+
+/** Latest record per seq: the highest attempt's latest record, tool calls folded (see latestAttemptTraces). */
 export function latestLeafTraces(
   traces: TraceRecord[],
 ): Map<number, LeafTraceRecord> {
   const best = new Map<number, LeafTraceRecord>();
-  for (const rec of traces) {
-    if (rec.t !== "leaf") continue;
+  for (const rec of latestAttemptTraces(traces).values()) {
     const cur = best.get(rec.seq);
-    if (
-      !cur ||
-      rec.attempt > cur.attempt ||
-      (rec.attempt === cur.attempt && rec.rev > cur.rev)
-    ) {
-      best.set(rec.seq, rec);
-    }
+    if (!cur || rec.attempt > cur.attempt) best.set(rec.seq, rec);
   }
   return best;
 }
@@ -1130,10 +1168,14 @@ export function openApprovals(traces: TraceRecord[]): ApprovalRequest[] {
   return [...open.values()];
 }
 
-export function statusForRun(runId: string): RunStatus {
+/** Status projection from disk; pass `loaded` to reuse journal/traces already in memory. */
+export function statusForRun(
+  runId: string,
+  loaded: { journal?: JournalRecord[]; traces?: TraceRecord[] } = {},
+): RunStatus {
   return projectStatus(
     readManifest(runId),
-    readJournal(runId),
-    readTraces(runId),
+    loaded.journal ?? readJournal(runId),
+    loaded.traces ?? readTraces(runId),
   );
 }

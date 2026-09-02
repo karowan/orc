@@ -576,6 +576,12 @@ export interface LeafTraceRecord {
   output?: Json; // bounded copy of structured output
   error?: string;
   sessionId?: string;
+  /**
+   * Tool calls whose state changed since this attempt's previous record (a
+   * delta, so the trace file grows linearly with tool use). Runs written
+   * before this carried the full list every time; latestLeafTraces() folds
+   * either shape by id into the attempt's current list.
+   */
   toolCalls?: ToolCallTrace[];
   tokensIn?: number;
   tokensOut?: number;
