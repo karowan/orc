@@ -1,0 +1,50 @@
+# Publishes every workspace whose package.json version is not yet on npm.
+# Bump versions in a PR; merging to main publishes them (tests gate it).
+# Safe to re-run: already-published versions are skipped.
+#
+# Auth is npm trusted publishing (OIDC): no token or secret. Each package on
+# npmjs.com lists this repo + workflow file as its trusted publisher; see
+# PUBLISHING.md for the one-time setup.
+name: publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One publish at a time; a later push waits instead of racing the registry.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for trusted publishing + provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - run: npm install -g npm@11
+
+      - run: npm ci
+
+      - name: Find versions not yet on the registry
+        id: plan
+        run: node scripts/publish-changed.mjs --plan
+
+      - name: Build and test
+        if: steps.plan.outputs.count != '0'
+        run: npm test
+
+      - name: Publish
+        if: steps.plan.outputs.count != '0'
+        run: npm run release

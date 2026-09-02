@@ -74,6 +74,8 @@ interface FirstFrontierCall {
   reasoningEffort?: string;
   schema?: Json;
   promptPreview?: string;
+  /** Set when the call came from parallel(); every lane of one parallel() call shares it. */
+  groupId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,10 +131,14 @@ export const launch = defineOp({
     const requestsWrite = sourceRequestsWrite(bundle);
     const requestsNetwork = sourceRequestsNetwork(bundle);
     writeReport(manifest.runId);
-    const monitorUrl = `http://127.0.0.1:${portForHome(orcHome())}/runs/${manifest.runId}`;
+    // Nothing serves the monitor URL unless `orc ui`/`orc open` is running;
+    // discover a live one (it may sit on a fallback port) and say so if not.
+    const monitorBase = await discoverMonitor();
+    const monitorRunning = monitorBase !== undefined;
+    const monitorUrl = `${monitorBase ?? `http://127.0.0.1:${portForHome(orcHome())}`}/runs/${manifest.runId}`;
     if (input.wait) {
       const status = await superviseRun(manifest.runId, ctx.registry, { onUpdate: debouncedReport() });
-      return { runId: manifest.runId, requestsWrite, requestsNetwork, monitorUrl, reportPath: runPaths(manifest.runId).report, status };
+      return { runId: manifest.runId, requestsWrite, requestsNetwork, monitorUrl, monitorRunning, reportPath: runPaths(manifest.runId).report, status };
     }
     await spawnDetachedSupervisor(manifest.runId, ctx.registryCwd);
     return {
@@ -143,6 +149,7 @@ export const launch = defineOp({
       networkAccess: manifest.networkAccess,
       approvalMode: manifest.approvalMode,
       monitorUrl,
+      monitorRunning,
       reportPath: runPaths(manifest.runId).report,
       wait: { op: "wait", input: { runId: manifest.runId, timeoutSeconds: 300 } },
     };
@@ -182,6 +189,7 @@ export const validate = defineOp({
             reasoningEffort: spec.reasoningEffort,
             schema: spec.schema,
             promptPreview: spec.prompt?.slice(0, 120),
+            groupId: spec.groupId,
           });
         },
         onLog: () => undefined,
@@ -290,7 +298,16 @@ export const validate = defineOp({
         }
       }
     }
-    return { ok: problems.length === 0, sha256, requestsWrite, requestsNetwork, firstCalls, problems };
+    // Structure hints never fail validation; they flag shapes that are usually
+    // slower than the author intended, at the one moment a human is looking.
+    const hints: string[] = [];
+    const groupIds = new Set(firstCalls.map((c) => c.groupId));
+    if (firstCalls.length > 1 && groupIds.size === 1 && !groupIds.has(undefined)) {
+      hints.push(
+        `the whole first frontier is one parallel() group of ${firstCalls.length} lanes; parallel() is a barrier, so whatever the program awaits next waits for the slowest lane. If later leaves depend on one lane's result, pipeline per lane with Promise.all over async functions instead (see \`orc guide\`, parallel)`,
+      );
+    }
+    return { ok: problems.length === 0, sha256, requestsWrite, requestsNetwork, firstCalls, problems, hints };
   },
 });
 
@@ -862,20 +879,22 @@ export async function spawnDetachedSupervisor(runId: string, registryCwd?: strin
 }
 
 let monitorSingleton: MonitorServer | null = null;
-async function ensureMonitor(runId?: string): Promise<string> {
+/** Base URL of a monitor already serving this ORC_HOME (it may sit on a fallback port), else undefined. */
+async function discoverMonitor(): Promise<string | undefined> {
   const home = orcHome();
   const firstPort = portForHome(home);
-  let base: string | undefined;
   for (let offset = 0; offset <= 20; offset++) {
     const candidate = `http://127.0.0.1:${firstPort + offset}`;
     const health = await fetch(`${candidate}/health.json`, { signal: AbortSignal.timeout(500) })
       .then(async (response) => response.ok ? await response.json() as { service?: unknown; home?: unknown } : undefined)
       .catch(() => undefined);
-    if (health?.service === "orc-monitor" && health.home === home) {
-      base = candidate;
-      break;
-    }
+    if (health?.service === "orc-monitor" && health.home === home) return candidate;
   }
+  return undefined;
+}
+
+async function ensureMonitor(runId?: string): Promise<string> {
+  let base = await discoverMonitor();
   if (!base) {
     monitorSingleton ??= new MonitorServer();
     base = (await monitorSingleton.start()).url;

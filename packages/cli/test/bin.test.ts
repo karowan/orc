@@ -96,3 +96,20 @@ describe("generated CLI flags", () => {
     expect(launchOp?.inputSchema.required ?? []).not.toContain("maxContextBytes");
   });
 });
+
+describe("launch output", () => {
+  it("tells a human when nothing serves the monitor URL it printed", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "orc-cli-"));
+    homes.push(home);
+    const program = path.join(home, "done.orc.ts");
+    fs.writeFileSync(program, "export default async () => ({ done: true });\n");
+    const out = execFileSync(
+      process.execPath,
+      ["--import", TSX, CLI, "launch", "--program-path", program, "--wait"],
+      { cwd: home, encoding: "utf8", env: { ...process.env, ORC_HOME: path.join(home, ".orc") }, timeout: 30_000 },
+    );
+    expect(out).toMatch(/^monitor http:\/\/127\.0\.0\.1:\d+\/runs\//m);
+    expect(out).toContain("note    no monitor is serving that URL");
+    expect(out).toContain("orc open --run-id");
+  });
+});

@@ -135,6 +135,11 @@ function render(opName: string, result: unknown, asJson: boolean): void {
   if (opName === "launch" && r.runId) {
     process.stdout.write(`run     ${String(r.runId)}\n`);
     if (r.monitorUrl) process.stdout.write(`monitor ${String(r.monitorUrl)}\n`);
+    if (r.monitorRunning === false) {
+      process.stdout.write(
+        `note    no monitor is serving that URL — start one with \`orc ui\`, or \`orc open --run-id ${String(r.runId)} --browser\`\n`,
+      );
+    }
     if (r.reportPath) process.stdout.write(`report  ${String(r.reportPath)}\n`);
     if (r.requestsWrite && !r.allowWrites) {
       process.stdout.write(`note    program declares write leaves but allow-writes was not granted — they will fail closed\n`);

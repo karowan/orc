@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-harness-codex",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
@@ -24,5 +24,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karowan/orc.git",
+    "directory": "packages/harness-codex"
   }
 }
