@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_POLICY,
+  MAX_COMMANDS_CEILING,
   DivergenceError,
   PolicyError,
   type ApprovalDecision,
@@ -224,6 +225,8 @@ export interface LaunchOptions {
   readDirs?: string[];
   networkAccess?: boolean;
   maxParallel?: number;
+  /** Cap on work calls (agent leaves + write ext calls); clamped to MAX_COMMANDS_CEILING. */
+  maxCommands?: number;
   idleTimeout?: number | false; // ms
   budgetUsd?: number; // reactive USD cap; the run fails once observed cost exceeds it
   /** Spec-time cap: a leaf whose composed context exceeds this many UTF-8 bytes fails before dispatch. */
@@ -268,6 +271,12 @@ export async function prepareRun(
   ) {
     throw new Error("maxContextBytes must be a positive integer");
   }
+  if (
+    opts.maxCommands !== undefined &&
+    !(Number.isInteger(opts.maxCommands) && opts.maxCommands > 0)
+  ) {
+    throw new Error("maxCommands must be a positive integer");
+  }
   // Read grants resolve like cwd — against the caller's working directory — and
   // nothing more. Existence is the launcher's concern: it materialized the files
   // and owns their lifetime, so no stat/realpath here (cwd is validated only
@@ -289,6 +298,10 @@ export async function prepareRun(
     readDirs,
     networkAccess: opts.networkAccess ?? false,
     maxParallel: Math.min(opts.maxParallel ?? DEFAULT_POLICY.maxParallel, 64),
+    maxCommands:
+      opts.maxCommands === undefined
+        ? undefined
+        : Math.min(opts.maxCommands, MAX_COMMANDS_CEILING),
     idleTimeoutMs: opts.idleTimeout ?? 15 * 60_000,
     budgetUsd: opts.budgetUsd,
     maxContextBytes: opts.maxContextBytes,
@@ -324,6 +337,10 @@ export async function superviseRun(
   policy: Policy = DEFAULT_POLICY,
 ): Promise<RunStatus> {
   const manifest = readManifest(runId);
+  // The launch-time cap is durable so a resume enforces the same bound.
+  if (manifest.maxCommands !== undefined) {
+    policy = { ...policy, maxCommands: manifest.maxCommands };
+  }
   const paths = runPaths(runId);
   const lock = await acquireLock(paths);
   // Durable liveness trail: with the lock held, this process is the owner.
@@ -394,6 +411,9 @@ class Supervisor {
   private writeLeafTasks = new Set<Promise<void>>();
   private stopping = false;
   private replayCallCursor = 0; // verified against callRecords during replay
+  /** Policy counters, rebuilt from the journal on resume (seq alone would count polls as work). */
+  private workCalls = 0;
+  private readOnlyExtCalls = 0;
   private phaseNames: string[] = [];
   private programMetaRecorded = false;
   /** Seqs that already spent their single structured-output schema re-ask. */
@@ -479,6 +499,7 @@ class Supervisor {
     // ---- fail-forward resume bookkeeping -----------------------------------
     const priorCalls = journal.filter((r): r is CallRecord => r.t === "call");
     this.callRecords = [...priorCalls];
+    for (const rec of priorCalls) this.countCall(rec);
     const effective = effectiveCompletions(journal);
     let retrySeqs: number[] = [];
     let persistRetry = false;
@@ -661,6 +682,16 @@ class Supervisor {
     void verifyAgainstJournal; // verification happens in checkNewCallsAgainstJournal
   }
 
+  /** Read-only ext calls are heartbeats, not work; everything else spends maxCommands. */
+  private static isReadOnlyExt(call: Pick<CallRecord, "kind" | "readOnly">): boolean {
+    return call.kind !== "agent" && call.readOnly;
+  }
+
+  private countCall(call: Pick<CallRecord, "kind" | "readOnly">): void {
+    if (Supervisor.isReadOnlyExt(call)) this.readOnlyExtCalls++;
+    else this.workCalls++;
+  }
+
   /** Journal (or verify) calls the VM made during the last drain. */
   private checkNewCallsAgainstJournal(): void {
     for (const { seq, spec } of this.newCalls) {
@@ -675,7 +706,13 @@ class Supervisor {
         }
         this.replayCallCursor++;
       } else {
-        if (seq >= this.policy.maxCommands) {
+        if (Supervisor.isReadOnlyExt(spec)) {
+          if (this.readOnlyExtCalls >= this.policy.maxReadOnlyExtCommands) {
+            throw new PolicyError(
+              `program exceeded maxReadOnlyExtCommands (${this.policy.maxReadOnlyExtCommands})`,
+            );
+          }
+        } else if (this.workCalls >= this.policy.maxCommands) {
           throw new PolicyError(
             `program exceeded maxCommands (${this.policy.maxCommands})`,
           );
@@ -738,6 +775,7 @@ class Supervisor {
         };
         this.journalOut.append(rec); // WAL: call journaled before dispatch
         this.callRecords.push(rec);
+        this.countCall(rec);
         this.replayCallCursor++;
         this.dispatchQueue.push(seq);
       }

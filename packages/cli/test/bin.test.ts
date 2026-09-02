@@ -72,6 +72,10 @@ describe("generated CLI flags", () => {
     expect(launch("--max-context-bytes", "4096").maxContextBytes).toBe(4096);
   });
 
+  it("derives --max-commands and carries it as a number", () => {
+    expect(launch("--max-commands", "256").maxCommands).toBe(256);
+  });
+
   it("accepts --no-* for booleans whose Zod default is true", () => {
     const result = JSON.parse(run("guide", "--no-probe")) as { guide: string };
     expect(result.guide).toContain("# orc — how to write and run a program");

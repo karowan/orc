@@ -157,7 +157,11 @@ loops for control flow.
 - No wall clock or randomness. \`Date\`, \`Math.random\`, timers, network, file
   access, and imports (beyond type-only) are unavailable — a program only
   decides which agents to run and how to combine their results.
-- Loops must be finite; an unbounded loop is stopped by a step limit.
+- Loops must be finite; an unbounded loop is stopped by a step limit, and a
+  run is capped at 128 work calls (agent() plus write \`ext.*\` calls). Raise
+  or lower that per run with \`--max-commands\` (at most 512). Read-only
+  \`ext.*\` calls count against a separate, larger bound, so polling a
+  read-only extension while you wait does not spend the work budget.
 - These constraints let orc replay a program exactly when you resume it, so the
   same inputs always produce the same run.
 
@@ -185,7 +189,9 @@ export const ORC_CLI_GUIDE = `
 \`--sandbox\`, \`--read-dirs <dir...>\` (read-only grants for materialized files
 referenced from context), \`--harness claude|codex\`, \`--budget <usd>\` (fail the
 run after observed estimated cost exceeds this; concurrent work may overshoot),
-\`--wait\` (block for the result instead of running in the background).
+\`--wait\` (block for the result instead of running in the background),
+\`--max-commands <n>\` (cap on agent + write \`ext.*\` calls, default 128, at most
+512; read-only \`ext.*\` polls are bounded separately).
 
 \`orc launch\` prints a monitor URL, but nothing serves it until a monitor is
 up: run \`orc ui\` (foreground) or \`orc open --run-id <id> [--browser]\`.

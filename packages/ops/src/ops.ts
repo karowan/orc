@@ -11,6 +11,7 @@ import { z } from "zod";
 import {
   DEFAULT_POLICY,
   JsonlAppender,
+  MAX_COMMANDS_CEILING,
   ProgramVM,
   acquireLock,
   appendControl,
@@ -94,6 +95,15 @@ export const launch = defineOp({
     readDirs: z.array(z.string()).optional().describe("read-only directories granted to every leaf, for files referenced from context"),
     networkAccess: z.boolean().default(false).describe("permit outbound network while retaining filesystem sandboxing"),
     maxParallel: z.number().int().min(1).max(64).optional(),
+    maxCommands: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_COMMANDS_CEILING)
+      .optional()
+      .describe(
+        `cap on work calls for this run — agent leaves plus write ext.* calls (default ${DEFAULT_POLICY.maxCommands}, at most ${MAX_COMMANDS_CEILING}); read-only ext.* calls are bounded separately`,
+      ),
     idleTimeoutSeconds: z.number().int().optional().describe("run default for the per-call output-idle watchdog; 0 disables"),
     budget: z.number().positive().optional().describe("reactive USD cap: fail the run once observed estimated cost exceeds this (may overshoot)"),
     maxContextBytes: z.number().int().positive().optional().describe("fail any leaf whose composed context exceeds this many UTF-8 bytes, at spec time before dispatch"),
@@ -114,6 +124,7 @@ export const launch = defineOp({
         readDirs: input.readDirs,
         networkAccess: input.networkAccess,
         maxParallel: input.maxParallel,
+        maxCommands: input.maxCommands,
         idleTimeout:
           input.idleTimeoutSeconds === undefined
             ? undefined
