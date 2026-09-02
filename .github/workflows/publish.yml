@@ -45,6 +45,12 @@ jobs:
         if: steps.plan.outputs.count != '0'
         run: npm test
 
+      - name: Publish preflight
+        if: steps.plan.outputs.count != '0'
+        run: |
+          echo "node $(node --version), npm $(npm --version) (trusted publishing needs >= 11.5.1)"
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then echo "OIDC token request URL: present"; else echo "OIDC token request URL: MISSING (id-token: write not granted)"; fi
+
       - name: Publish
         if: steps.plan.outputs.count != '0'
         run: npm run release
