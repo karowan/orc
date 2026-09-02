@@ -656,6 +656,8 @@ export interface RunManifest {
   readDirs?: string[]; // read-only grants for launcher-materialized files; launch-resolved, absent when none
   networkAccess: boolean; // outbound network inside the sandbox (default false)
   maxParallel: number;
+  /** Per-run override of Policy.maxCommands (≤ MAX_COMMANDS_CEILING); absent = policy default. */
+  maxCommands?: number;
   idleTimeoutMs: number | false;
   /** Reactive USD cap: the run fails once observed estimated cost exceeds this. */
   budgetUsd?: number;
@@ -722,7 +724,16 @@ export type ControlMessage =
 // Policy caps
 // ---------------------------------------------------------------------------
 export interface Policy {
+  /**
+   * Work calls per run: agent leaves plus write extension calls. Read-only
+   * extension calls (heartbeat polls) are bounded by maxReadOnlyExtCommands
+   * instead, so a program that polls while it waits never spends its work
+   * budget on waiting. A run may lower or raise this via manifest.maxCommands
+   * (clamped to MAX_COMMANDS_CEILING).
+   */
   maxCommands: number; // 128
+  /** Read-only extension calls per run; the runaway bound for polling loops. */
+  maxReadOnlyExtCommands: number; // 1024
   maxParallel: number; // 8 default; <=64
   maxPromptBytes: number; // 1 MiB
   maxResultBytes: number; // 1 MiB
@@ -733,8 +744,12 @@ export interface Policy {
   readOnlyRetries: number; // extra attempts for default read-only and opted-in leaves
 }
 
+/** Hard ceiling for a per-run maxCommands override — preserves the runaway bound. */
+export const MAX_COMMANDS_CEILING = 512;
+
 export const DEFAULT_POLICY: Policy = {
   maxCommands: 128,
+  maxReadOnlyExtCommands: 1024,
   maxParallel: 8,
   maxPromptBytes: 1 << 20,
   maxResultBytes: 1 << 20,
