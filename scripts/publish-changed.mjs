@@ -72,7 +72,9 @@ if (plan) process.exit(0);
 
 for (const pkg of pending) {
   const npmArgs = ["publish", "--workspace", pkg.name, "--access", "public"];
-  if (process.env.GITHUB_ACTIONS === "true") npmArgs.push("--provenance");
+  // In CI: provenance, and verbose logs so a refused OIDC token exchange shows
+  // its real reason instead of surfacing as a bare ENEEDAUTH.
+  if (process.env.GITHUB_ACTIONS === "true") npmArgs.push("--provenance", "--loglevel=verbose");
   if (dryRun) npmArgs.push("--dry-run");
   execFileSync("npm", npmArgs, { cwd: root, stdio: "inherit" });
 }
