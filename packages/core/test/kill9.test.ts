@@ -13,6 +13,22 @@ beforeEach(() => {
   process.env.ORC_HOME = home;
 });
 
+/** superviseRun takes the lock before any side effect, so a refused attempt is safe to retry. */
+async function resumeOnceLockFrees(
+  runId: string,
+  registry: Parameters<typeof superviseRun>[1],
+): ReturnType<typeof superviseRun> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await superviseRun(runId, registry);
+    } catch (err) {
+      const stillHeld = err instanceof Error && err.message === "run is owned by a live supervisor";
+      if (!stillHeld || attempt >= 50) throw err; // ~5s
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+}
+
 describe("kill -9 resume", () => {
   it("a SIGKILLed supervisor resumes to the same result with no double-dispatch of settled leaves", async () => {
     const log = path.join(home, "invocations.log");
@@ -41,7 +57,9 @@ describe("kill -9 resume", () => {
       if (settled >= 1 && !finished) break;
     }
     child.kill("SIGKILL");
-    await new Promise((r) => setTimeout(r, 200));
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    }
     void paths;
 
     const journalAfterKill = readJournal(manifest.runId);
@@ -49,8 +67,10 @@ describe("kill -9 resume", () => {
     expect(journalAfterKill.some((r) => r.t === "finish")).toBe(false); // died mid-run
     expect(settledBeforeKill.length).toBeGreaterThan(0); // and not before doing work
 
-    // SIGKILL closes the holder pipe, so the kernel lock is released.
-    const resumed = await superviseRun(
+    // SIGKILL closes the lock holder's stdin; the holder exits and the kernel
+    // releases the lock — but not instantly on a loaded machine, so wait for
+    // it rather than sleeping a fixed time.
+    const resumed = await resumeOnceLockFrees(
       manifest.runId,
       makeRegistry(makeFakeHarness({ invocationLog: log })),
     );
