@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-cli",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "0BSD",
   "type": "module",
   "main": "dist/bin.js",
@@ -28,5 +28,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karowan/orc.git",
+    "directory": "packages/cli"
   }
 }

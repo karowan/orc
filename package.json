@@ -8,7 +8,7 @@
     "test": "tsc -b && vitest run",
     "typecheck": "tsc -b --noEmit || tsc -b",
     "build:cli": "node --import tsx scripts/build-cli.mjs",
-    "release": "tsc -b && npm publish --workspaces"
+    "release": "tsc -b && node scripts/publish-changed.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

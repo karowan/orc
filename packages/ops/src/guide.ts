@@ -114,9 +114,31 @@ its prompt (plus any shared \`--context\`).
     when the run was launched with \`allowWrites\`; those write leaves execute
     concurrently up to \`maxParallel\` and share the caller's filesystem.
 
+    parallel() is a BARRIER: it resolves only once the slowest lane has
+    settled, so anything awaited after it waits on every lane. Use it when the
+    next step truly needs all the outcomes (a judge over every verdict). When
+    a later leaf depends on ONE lane's result, write \`Promise.all\` over
+    per-lane async functions instead, so each lane pipelines on its own; wrap
+    the lane in \`settle()\` if some lanes may fail:
+
+        // barrier: no attacker starts until every seat has answered
+        const answers = await parallel(seats.map((s) => ({ prompt: \`Answer as \${s}\` })));
+        const attacks = await parallel(answers.map((a) => ({ prompt: \`Attack \${JSON.stringify(a)}\` })));
+
+        // pipelined: each attacker starts as soon as its own seat answers
+        const lane = async (s: string) => {
+          const answer = await agent(\`Answer as \${s}\`, { id: \`seat-\${s}\`, phase: "seats" });
+          return agent(\`Attack \${JSON.stringify(answer)}\`, { id: \`attack-\${s}\`, phase: "attack" });
+        };
+        const attacks = await Promise.all(seats.map((s) => settle(lane(s))));
+        return phase("judge", () => agent(\`Judge these: \${JSON.stringify(attacks)}\`));
+
 - phase(name, fn) => Promise<result>
     Group every agent() call made inside \`fn\` under a phase, for a readable
-    run timeline.
+    run timeline. phase() awaits fn, so \`await phase("x", () => parallel(...))\`
+    is a barrier too. To label lanes that pipeline independently, pass the
+    per-call \`phase: "x"\` option (as in the example above) rather than
+    nesting a wrapper per stage; keep the wrapper for real joins like the judge.
 
 - settle(promise) => { status: "ok", value } | { status: "error", error }
     Run a lane and capture its outcome instead of letting a failure stop the run
@@ -165,13 +187,16 @@ referenced from context), \`--harness claude|codex\`, \`--budget <usd>\` (fail t
 run after observed estimated cost exceeds this; concurrent work may overshoot),
 \`--wait\` (block for the result instead of running in the background).
 
+\`orc launch\` prints a monitor URL, but nothing serves it until a monitor is
+up: run \`orc ui\` (foreground) or \`orc open --run-id <id> [--browser]\`.
+
 ## 3. Watch and collect
 
     orc status     --run-id <id>       # summary
     orc wait       --run-id <id>       # block until it finishes
     orc get-result --run-id <id>       # the final result (or --seq N for one leaf)
     orc trace      --run-id <id>       # per-leaf and per-tool detail
-    orc open       --run-id <id>       # open the live monitor, print its URL
+    orc open       --run-id <id>       # start the monitor if needed, print its URL
     orc list                           # recent runs
 
 ## 4. Approvals

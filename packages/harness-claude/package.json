@@ -1,6 +1,6 @@
 {
   "name": "@karowanorg/orc-harness-claude",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "license": "0BSD",
   "type": "module",
   "main": "dist/index.js",
@@ -26,5 +26,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/karowan/orc.git",
+    "directory": "packages/harness-claude"
   }
 }
