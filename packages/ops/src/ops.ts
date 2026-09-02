@@ -382,7 +382,7 @@ export const getResult = defineOp({
 
 export const getTrace = defineOp({
   name: "trace",
-  doc: "The run's trace: status projection plus bounded leaf/tool detail.",
+  doc: "The run's trace: status projection plus bounded leaf/tool detail. Leaf records carry tool-call deltas per revision; `status` holds the folded per-attempt view.",
   readOnly: true,
   input: z.object({ runId: RunId }),
   async handler(input) {

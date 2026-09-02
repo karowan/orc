@@ -47,6 +47,8 @@ export interface FakeHarnessOptions {
   result?: (req: LeafRequest) => Json;
   /** If set, append one line per invocation: `${seq}:${attempt}:${promptPrefix}` */
   invocationLog?: string;
+  /** Tool calls (open+close pairs) to emit per invocation (default 1). */
+  toolCallsPerLeaf?: number;
   /** Delay engine: setTimeout by default. */
   name?: string;
 }
@@ -72,8 +74,12 @@ export function makeFakeHarness(opts: FakeHarnessOptions = {}): Harness {
       for (const line of opts.harnessLogLines ?? []) ctx?.log?.(line);
       const wait = opts.latency?.(req.seq) ?? 0;
       if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-      yield { kind: "tool-call-open", id: `t${req.seq}`, name: "FakeTool", atMs: Date.now() };
-      yield { kind: "tool-call-close", id: `t${req.seq}`, status: "ok", atMs: Date.now() };
+      const calls = opts.toolCallsPerLeaf ?? 1;
+      for (let i = 0; i < calls; i++) {
+        const id = calls === 1 ? `t${req.seq}` : `t${req.seq}-${i}`;
+        yield { kind: "tool-call-open", id, name: "FakeTool", atMs: Date.now() };
+        yield { kind: "tool-call-close", id, status: "ok", atMs: Date.now() };
+      }
       const n = (invokeCounts.get(req.seq) ?? 0) + 1;
       invokeCounts.set(req.seq, n);
       if (opts.flaky && opts.flaky[req.seq] !== undefined && n <= opts.flaky[req.seq]) {

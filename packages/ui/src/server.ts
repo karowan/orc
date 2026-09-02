@@ -6,13 +6,14 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import type { ControlMessage, LeafTraceRecord, RunEventRecord, TraceRecord } from "@karowanorg/orc-core";
 import {
+  JsonlTail,
   appendControl,
   listRuns,
+  makeTraceCompactor,
   openApprovals,
   orcHome,
   readJournal,
   readManifest,
-  readTraces,
   resolveApprovalDecision,
   runPaths,
 } from "@karowanorg/orc-core";
@@ -35,6 +36,8 @@ const TRUNC_LIMIT = 16 * 1024;
 const SSE_DEBOUNCE_MS = 250;
 const SSE_POLL_MS = 1500;
 const MAX_BODY_BYTES = 256 * 1024;
+/** Runs whose parsed traces stay cached between ticks (least recently viewed evicted). */
+const MAX_TRACE_TAILS = 8;
 
 // ---------------------------------------------------------------------------
 // Deterministic port
@@ -101,6 +104,8 @@ export class MonitorServer {
   private server: http.Server | undefined;
   private boundPort: number | undefined;
   private readonly sseCleanups = new Set<() => void>();
+  /** Per-run incremental trace readers: a tick parses only the bytes appended since the last one. */
+  private readonly traceTails = new Map<string, JsonlTail<TraceRecord>>();
 
   /** Bind 127.0.0.1 on the deterministic port, falling back to +1..+20. */
   async start(): Promise<{ port: number; url: string }> {
@@ -151,6 +156,7 @@ export class MonitorServer {
   async stop(): Promise<void> {
     for (const cleanup of [...this.sseCleanups]) cleanup();
     this.sseCleanups.clear();
+    this.traceTails.clear();
     const server = this.server;
     this.server = undefined;
     this.boundPort = undefined;
@@ -193,7 +199,7 @@ export class MonitorServer {
             case "fragment":
               return this.sendHtml(res, renderRunBody({ ...this.project(runId), interactive: true, selectedSeq }));
             case "state.json":
-              return this.sendJson(res, statusForRun(runId));
+              return this.sendJson(res, statusForRun(runId, { traces: this.tracesFor(runId) }));
             case "trace.json": {
               const { status, traces } = this.project(runId);
               return this.sendJson(res, { status, traces: traces.map(boundTrace) });
@@ -217,7 +223,7 @@ export class MonitorServer {
           } catch {
             return this.sendText(res, 400, "invalid JSON body");
           }
-          const approval = openApprovals(readTraces(runId)).find(
+          const approval = openApprovals(this.tracesFor(runId)).find(
             (candidate) => candidate.id === approvalId,
           );
           if (!approval) return this.sendText(res, 409, "approval is not pending");
@@ -262,12 +268,31 @@ export class MonitorServer {
     traces: TraceRecord[];
     journal: ReturnType<typeof readJournal>;
   } {
+    const traces = this.tracesFor(runId);
+    const journal = readJournal(runId);
     return {
       manifest: readManifest(runId),
-      status: statusForRun(runId),
-      traces: readTraces(runId),
-      journal: readJournal(runId),
+      status: statusForRun(runId, { journal, traces }),
+      traces,
+      journal,
     };
+  }
+
+  /** Traces for a run via its cached incremental reader (Map order doubles as LRU order). */
+  private tracesFor(runId: string): TraceRecord[] {
+    let tail = this.traceTails.get(runId);
+    if (tail) {
+      this.traceTails.delete(runId);
+    } else {
+      tail = new JsonlTail<TraceRecord>(runPaths(runId).traces, makeTraceCompactor());
+      while (this.traceTails.size >= MAX_TRACE_TAILS) {
+        const oldest = this.traceTails.keys().next().value;
+        if (oldest === undefined) break;
+        this.traceTails.delete(oldest);
+      }
+    }
+    this.traceTails.set(runId, tail);
+    return tail.read();
   }
 
   // -------------------------------------------------------------------------
@@ -292,7 +317,7 @@ export class MonitorServer {
 
     const settled = (): boolean => {
       try {
-        return statusForRun(runId).state !== "running";
+        return statusForRun(runId, { traces: this.tracesFor(runId) }).state !== "running";
       } catch {
         return false;
       }

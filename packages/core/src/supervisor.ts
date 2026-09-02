@@ -1074,6 +1074,7 @@ class Supervisor {
     let rev = 0;
     const startMs = Date.now();
     const toolCalls = new Map<string, ToolCallTrace>();
+    const changedToolIds = new Set<string>(); // since the last emitted record
     let tokensIn: number | undefined;
     let tokensOut: number | undefined;
     let costUsd: number | null | undefined;
@@ -1112,12 +1113,19 @@ class Supervisor {
       fsync = false,
     ) => {
       if (this.stopping) return;
+      // Tool-call deltas: only the calls that changed since the previous
+      // record. Writing the cumulative list every time made traces.jsonl grow
+      // quadratically with tool use; latestLeafTraces() folds the deltas back.
+      const changedTools = [...changedToolIds]
+        .map((id) => toolCalls.get(id))
+        .filter((tc): tc is ToolCallTrace => tc !== undefined);
+      changedToolIds.clear();
       this.traceOut.append(
         {
           ...base,
           rev: rev++,
           status,
-          toolCalls: [...toolCalls.values()],
+          ...(changedTools.length > 0 ? { toolCalls: changedTools } : {}),
           model: resolvedModel,
           reasoningEffort: resolvedEffort,
           tokensIn,
@@ -1289,7 +1297,7 @@ class Supervisor {
           );
         assertHarnessEvent(ev);
         leaf.lastEventAtMs = Date.now();
-        this.applyEvent(ev, toolCalls, (u) => {
+        this.applyEvent(ev, toolCalls, changedToolIds, (u) => {
           tokensIn = u.tokensIn ?? tokensIn;
           tokensOut = u.tokensOut ?? tokensOut;
           if (u.costUsd === null) {
@@ -1400,6 +1408,7 @@ class Supervisor {
   private applyEvent(
     ev: HarnessEvent,
     toolCalls: Map<string, ToolCallTrace>,
+    changedToolIds: Set<string>,
     usage: (u: {
       tokensIn?: number;
       tokensOut?: number;
@@ -1415,12 +1424,14 @@ class Supervisor {
         startMs: ev.atMs,
         status: "running",
       });
+      changedToolIds.add(ev.id);
     } else if (ev.kind === "tool-call-close") {
       const tc = toolCalls.get(ev.id);
       if (tc) {
         tc.status = ev.status;
         tc.endMs = ev.atMs;
         if (ev.result !== undefined) tc.result = ev.result;
+        changedToolIds.add(ev.id);
       }
     } else if (ev.kind === "usage") {
       usage(ev);
